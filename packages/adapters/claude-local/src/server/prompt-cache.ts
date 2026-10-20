@@ -11,10 +11,13 @@ import {
 
 type SkillEntry = PaperclipSkillEntry;
 
+export const CLAUDE_RUN_BUNDLE_PLUGIN_NAME = "paperclip-run-bundle";
+
 export interface ClaudePromptBundle {
   bundleKey: string;
   rootDir: string;
   addDir: string;
+  pluginDir: string;
   instructionsFilePath: string | null;
 }
 
@@ -158,6 +161,9 @@ export async function prepareClaudePromptBundle(input: {
     }
   }
 
+  const pluginDir = path.join(rootDir, "plugin");
+  await writeRunBundlePlugin(pluginDir, skills);
+
   const instructionsFilePath = instructionsContents
     ? path.join(rootDir, "agent-instructions.md")
     : null;
@@ -169,6 +175,36 @@ export async function prepareClaudePromptBundle(input: {
     bundleKey,
     rootDir,
     addDir: rootDir,
+    pluginDir,
     instructionsFilePath,
   };
+}
+
+async function writeRunBundlePlugin(pluginDir: string, skills: SkillEntry[]): Promise<void> {
+  const manifestDir = path.join(pluginDir, ".claude-plugin");
+  const pluginSkillsDir = path.join(pluginDir, "skills");
+  await fs.mkdir(manifestDir, { recursive: true });
+  await fs.mkdir(pluginSkillsDir, { recursive: true });
+  await ensureReadableFile(
+    path.join(manifestDir, "plugin.json"),
+    `${JSON.stringify({
+      name: CLAUDE_RUN_BUNDLE_PLUGIN_NAME,
+      description: "Skills enabled for this Paperclip run",
+      version: "0.0.1",
+    }, null, 2)}\n`,
+  );
+  for (const entry of skills) {
+    await ensureRunBundleSkillLink(
+      path.join(pluginSkillsDir, entry.runtimeName),
+      path.join("..", "..", ".claude", "skills", entry.runtimeName),
+    );
+  }
+}
+
+async function ensureRunBundleSkillLink(target: string, linkTarget: string): Promise<void> {
+  if ((await fs.readlink(target).catch(() => null)) === linkTarget) return;
+  await fs.rm(target, { force: true });
+  await fs.symlink(linkTarget, target).catch((err: NodeJS.ErrnoException) => {
+    if (err.code !== "EEXIST") throw err;
+  });
 }

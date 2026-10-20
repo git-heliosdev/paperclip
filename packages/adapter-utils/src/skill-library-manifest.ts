@@ -30,6 +30,7 @@ function sanitizeManifestText(value: string, maxLength: number): string {
 export function buildSkillLibraryManifestMarkdown(input: {
   entries: readonly PaperclipSkillEntry[];
   desiredSkillKeys: ReadonlySet<string>;
+  invocationPluginName?: string;
 }): string | null {
   if (input.entries.length === 0) return null;
   const lines = [...input.entries]
@@ -40,6 +41,10 @@ export function buildSkillLibraryManifestMarkdown(input: {
       if (enabled && entry.sourceStatus === "missing") {
         const detail = entry.missingDetail ? sanitizeManifestText(entry.missingDetail, 200) : "";
         return `- ${key} — enabled but unavailable${detail ? `: ${detail}` : ""}`;
+      }
+      if (enabled && input.invocationPluginName) {
+        const invocation = sanitizeManifestText(`${input.invocationPluginName}:${entry.runtimeName}`, 200);
+        return `- ${key} — enabled, invoke as \`${invocation}\``;
       }
       return `- ${key} — ${enabled ? "enabled" : "installed, not enabled for you"}`;
     });

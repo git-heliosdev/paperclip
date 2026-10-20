@@ -94,7 +94,7 @@ import {
 } from "./cli-capabilities.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
-import { prepareClaudePromptBundle } from "./prompt-cache.js";
+import { CLAUDE_RUN_BUNDLE_PLUGIN_NAME, prepareClaudePromptBundle } from "./prompt-cache.js";
 import { buildClaudeExecutionPermissionArgs, claudeSandboxPermissionEnv } from "./permissions.js";
 import { resolveClaudeModel, SANDBOX_INSTALL_COMMAND } from "../index.js";
 import {
@@ -531,6 +531,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const skillLibraryManifest = buildSkillLibraryManifestMarkdown({
     entries: claudeSkillEntries,
     desiredSkillKeys: desiredSkillNames,
+    invocationPluginName: config.managedAiConnection ? CLAUDE_RUN_BUNDLE_PLUGIN_NAME : undefined,
   });
   if (skillLibraryManifest) {
     combinedInstructionsContents = combinedInstructionsContents
@@ -677,6 +678,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ? preparedExecutionTargetRuntime?.assetDirs.skills ??
       path.posix.join(effectiveExecutionCwd, ".paperclip-runtime", "claude", "skills")
     : promptBundle.addDir;
+  const effectivePluginDir = executionTargetIsRemote
+    ? path.posix.join(effectivePromptBundleAddDir, "plugin")
+    : promptBundle.pluginDir;
   const effectiveInstructionsFilePath = promptBundle.instructionsFilePath
     ? executionTargetIsRemote
       ? path.posix.join(effectivePromptBundleAddDir, path.basename(promptBundle.instructionsFilePath))
@@ -852,7 +856,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     attemptInstructionsFilePath: string | undefined,
   ) => {
     const args = ["--print", "--output-format", "stream-json", "--verbose"];
-    if (config.managedAiConnection) args.push("--setting-sources", "user");
+    if (config.managedAiConnection) args.push("--setting-sources", "user", "--plugin-dir", effectivePluginDir);
     if (resumeSessionId) args.push("--resume", resumeSessionId);
     args.push(...buildClaudeExecutionPermissionArgs({
       dangerouslySkipPermissions,

@@ -19,6 +19,20 @@ describe("buildSkillLibraryManifestMarkdown", () => {
     expect(buildSkillLibraryManifestMarkdown({ entries: [], desiredSkillKeys: new Set() })).toBeNull();
   });
 
+  it("lists enabled skills under their plugin-namespaced invocation id when a plugin name is given", () => {
+    const manifest = buildSkillLibraryManifestMarkdown({
+      entries: [
+        entry({ key: "acme/grilling", runtimeName: "grilling--abc123" }),
+        entry({ key: "acme/wireframe" }),
+      ],
+      desiredSkillKeys: new Set(["acme/grilling"]),
+      invocationPluginName: "paperclip-run-bundle",
+    });
+
+    expect(manifest).toContain("- acme/grilling — enabled, invoke as `paperclip-run-bundle:grilling--abc123`");
+    expect(manifest).toContain("- acme/wireframe — installed, not enabled for you");
+  });
+
   it("renders enabled, not-enabled, and broken states deterministically and key-sorted", () => {
     const entries = [
       entry({ key: "acme/tools/wireframe" }),

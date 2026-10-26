@@ -245,6 +245,12 @@ export function detectClaudeLoginRequired(input: {
   stderr: string;
 }): { requiresLogin: boolean; loginUrl: string | null } {
   const parsed = input.parsed ?? null;
+
+  // Structured turn-limit results take precedence over login text
+  // contained in transcript or tool output.
+  if (isClaudeMaxTurnsResult(parsed)) {
+    return { requiresLogin: false, loginUrl: null };
+  }
   const resultText = asString(parsed?.result, "").trim();
 
   // The legacy login-prompt markers keep their broad scope. They match against

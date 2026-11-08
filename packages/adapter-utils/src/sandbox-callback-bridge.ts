@@ -132,6 +132,7 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCa
   // Delivery reads only its explicitly bound Studio token through the run-scoped secret API.
   // Paperclip still enforces the run agent, secret binding, and secrets:read permission.
   { method: "POST", path: /^\/api\/agents\/me\/secrets\/studio_publish_token\/value$/ },
+  { method: "POST", path: /^\/api\/agents\/me\/secrets\/studio_delivery_publish_token_v3\/value$/ },
   { method: "POST", path: /^\/api\/companies\/[^/]+\/agent-commentary$/ },
   { method: "GET", path: /^\/api\/agents\/me\/inbox-lite$/ },
   { method: "GET", path: /^\/api\/agents\/me\/inbox\/mine$/ },

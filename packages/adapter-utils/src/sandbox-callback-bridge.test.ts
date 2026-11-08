@@ -95,6 +95,26 @@ describe("sandbox callback bridge", () => {
 
   const cleanupFns: Array<() => Promise<void>> = [];
 
+  it("allows only the Delivery Studio token value endpoint through the callback bridge", () => {
+    expect(authorizeSandboxCallbackBridgeRequestWithRoutes({
+      method: "POST",
+      path: "/api/agents/me/secrets/studio_publish_token/value",
+    })).toBeNull();
+
+    expect(authorizeSandboxCallbackBridgeRequestWithRoutes({
+      method: "POST",
+      path: "/api/agents/me/secrets/another_secret/value",
+    })).toBe("Route not allowed: POST /api/agents/me/secrets/another_secret/value");
+    expect(authorizeSandboxCallbackBridgeRequestWithRoutes({
+      method: "GET",
+      path: "/api/agents/me/secrets",
+    })).toBe("Route not allowed: GET /api/agents/me/secrets");
+    expect(authorizeSandboxCallbackBridgeRequestWithRoutes({
+      method: "POST",
+      path: "/api/agents/me/secrets/studio_publish_token/value/extra",
+    })).not.toBeNull();
+  });
+
   function createExecRunner() {
     return {
       execute: async (input: {

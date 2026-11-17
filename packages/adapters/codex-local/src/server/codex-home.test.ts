@@ -1039,6 +1039,39 @@ describe("evaluateCodexCredentialReadiness", () => {
     }
   });
 
+  it.each([
+    ["paperclip-projects", "/api/mcp/project-tools", true],
+    ["paperclip-connections", "/mcp/runtime-tools", true],
+    ["paperclip-assigned", "/mcp/gateways/gw_test-1", true],
+    ["paperclip-projects", "/api/mcp/other", false],
+    ["unrelated", "/api/mcp/project-tools", false],
+    ["paperclip-projects", "https://foreign.example/api/mcp/project-tools", false],
+    ["paperclip-connections", "https://foreign.example/mcp/runtime-tools", false],
+    ["paperclip-assigned", "https://foreign.example/mcp/gateways/gw_test-1", false],
+    ["paperclip-assigned", "/mcp/gateways/gw_test-1/extra", false],
+    ["paperclip-projects", "/api/mcp/project-tools?extra=1", false],
+    ["paperclip-projects", "/api/mcp/project-tools#extra", false],
+    ["paperclip-projects", "https://user:pass@paperclip.example/api/mcp/project-tools", false],
+  ] as const)("routes only governed MCP gateway %s at %s without provider prompts", async (name, endpointPath, governed) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-mcp-policy-"));
+    try {
+      const configPath = path.join(root, "config.toml");
+      const unmanaged = 'approval_policy = "never"\n[mcp_servers.third_party]\nurl = "https://third.example/mcp"\ndefault_tools_approval_mode = "prompt"\n';
+      await fs.writeFile(configPath, unmanaged);
+      await writeManagedCodexMcpConfig({
+        codexHome: root,
+        apiBaseUrl: "https://paperclip.example",
+        gateways: [{ name, endpointPath, bearerToken: "test-gateway-token" }],
+      });
+      const config = await fs.readFile(configPath, "utf8");
+      expect(config.startsWith(unmanaged.trimEnd())).toBe(true);
+      expect(config.includes('default_tools_approval_mode = "approve"')).toBe(governed);
+      expect(config.match(/^approval_policy = "never"$/gm)).toHaveLength(1);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("restricts permissions on an existing managed MCP config", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-mcp-config-"));
     try {

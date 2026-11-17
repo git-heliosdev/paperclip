@@ -368,7 +368,7 @@ function buildManagedMcpBlock(input: {
     };
     if (gatewayUrl.origin === new URL(input.apiBaseUrl).origin
       && !gatewayUrl.username && !gatewayUrl.password && !gatewayUrl.search && !gatewayUrl.hash
-      && policyGatewayPaths[gateway.name]?.test(gatewayUrl.pathname)) {
+      && policyGatewayPaths[baseName]?.test(gatewayUrl.pathname)) {
       lines.push('default_tools_approval_mode = "approve"');
     }
   });

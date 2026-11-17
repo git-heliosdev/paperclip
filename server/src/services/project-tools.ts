@@ -2,12 +2,15 @@ import { projectDiscoverySchema, createProjectSchema, createIssueSchema, setIssu
 import { z } from "zod";
 import { CAPABILITY_SEMANTIC_TOOL_CATALOG } from "../vendor/paperclip-runner/index.js";
 import { badRequest } from "../errors.js";
+import { callTaskWorkspaceTool } from "./task-workspace-tools.js";
 
 export const PROJECT_TOOL_NAMES = ["create_project", "list_project_repositories", "list_projects"];
+const TASK_TOOL_NAMES = ["create_task", "set_task_title", "get_workspace", "list_workspaces", "select_workspace", "prepare_repository"];
+const TASK_WORKSPACE_TOOL_NAMES = new Set(["get_workspace", "list_workspaces", "select_workspace", "prepare_repository"]);
 export function projectToolDefinitions(workMode: string, includeTask = false) {
   return CAPABILITY_SEMANTIC_TOOL_CATALOG.filter(tool =>
-    (PROJECT_TOOL_NAMES.includes(tool.operationId) || includeTask && ["create_task", "set_task_title"].includes(tool.operationId))
-    && tool.allowedModes.includes(workMode as "standard"),
+    (PROJECT_TOOL_NAMES.includes(tool.operationId) || includeTask && TASK_TOOL_NAMES.includes(tool.operationId))
+    && tool.allowedModes.includes(workMode as "standard" | "ask" | "planning" | "skill_test"),
   ).map(tool => ({ name: tool.operationId, description: tool.description,
     inputSchema: tool.operationId === "create_project"
       ? z.toJSONSchema(createProjectSchema.extend({ idempotencyKey: z.string().min(1).max(255) }))
@@ -21,6 +24,16 @@ export async function callProjectTool(input: {
   companyId: string; issueId: string; agentId: string; conversation: boolean;
 }) {
   const args = input.arguments;
+  if (TASK_WORKSPACE_TOOL_NAMES.has(input.name)) {
+    return callTaskWorkspaceTool({
+      name: input.name,
+      arguments: args,
+      apiUrl: input.apiUrl,
+      token: input.token,
+      companyId: input.companyId,
+      issueId: input.issueId,
+    });
+  }
   const page = input.name === "list_projects" ? projectDiscoverySchema.parse(args) : null;
   let path = `/companies/${input.companyId}/projects`;
   let body: unknown;

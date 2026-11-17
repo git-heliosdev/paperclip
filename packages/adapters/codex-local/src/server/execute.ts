@@ -35,6 +35,7 @@ import {
   resolveAdapterExecutionTargetCommandForLogs,
   runAdapterExecutionTargetProcess,
   runAdapterExecutionTargetShellCommand,
+  resolveProjectProvisioningBridgeRoutes,
   startAdapterExecutionTargetPaperclipBridge,
 } from "@paperclipai/adapter-utils/execution-target";
 import {
@@ -1020,6 +1021,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
         runId,
         target: runtimeExecutionTarget,
+        routes: resolveProjectProvisioningBridgeRoutes(
+          agent,
+          process.env.PAPERCLIP_PROJECT_PROVISIONING_AGENT_ID,
+        ),
         enableSandboxDuplexBridge: adapterExecutionTargetEnablesSandboxDuplexBridge(runtimeExecutionTarget),
         duplexObservabilityRecorder: adapterExecutionTargetDuplexObservabilityRecorder(runtimeExecutionTarget),
         runtimeRootDir: preparedExecutionTargetRuntime?.runtimeRootDir,

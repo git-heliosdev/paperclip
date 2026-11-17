@@ -34,6 +34,8 @@ export type {
   SandboxAdditionalSource,
 } from "./sandbox-managed-runtime.js";
 import {
+  authorizeSandboxCallbackBridgeRequestWithRoutes,
+  type SandboxCallbackBridgeRouteRule,
   createCommandManagedSandboxCallbackBridgeQueueClient,
   createSandboxCallbackBridgeAsset,
   createSandboxCallbackBridgeToken,
@@ -4317,8 +4319,30 @@ async function closeDuplexChannelWithinBudget(
   }
 }
 
+export function resolveProjectProvisioningBridgeRoutes(
+  agent: { id: string; companyId: string },
+  enabledAgentId: string | undefined,
+): readonly SandboxCallbackBridgeRouteRule[] | undefined {
+  if (agent.id !== enabledAgentId ||
+      !/^[a-f0-9-]{36}$/i.test(agent.id) ||
+      !/^[a-f0-9-]{36}$/i.test(agent.companyId)) {
+    return undefined;
+  }
+
+  // Bind the additional routes to a trusted run identity, and leave the
+  // server's original run-token and project authorization checks in place.
+  const projectWorkspaces = /^\/api\/projects\/[a-f0-9-]{36}\/workspaces$/i;
+  return [
+    ...HTTP2_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST,
+    { method: "POST", path: new RegExp(`^/api/companies/${agent.companyId}/projects$`) },
+    { method: "GET", path: projectWorkspaces },
+    { method: "POST", path: projectWorkspaces },
+  ];
+}
+
 export async function startAdapterExecutionTargetPaperclipBridge(input: {
   runId: string;
+  routes?: readonly SandboxCallbackBridgeRouteRule[];
   target: AdapterExecutionTarget | null | undefined;
   runtimeRootDir: string | null | undefined;
   adapterKey: string;
@@ -4788,7 +4812,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
           const http2Server = createHttp2BridgeServer({
             bridgeToken,
             forwardRequest: http2ForwardRequest,
-            routes: HTTP2_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST,
+            routes: input.routes ?? HTTP2_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST,
             // The same resolved limit the launch environment hands the
             // sandbox-side gateway (`PAPERCLIP_BRIDGE_MAX_BODY_BYTES`,
             // below), so the host check and the gateway check enforce one
@@ -4898,9 +4922,13 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
     // the run parent context (see `runWithRuntimeParent` inside that function).
     // So the startup `mkdir` execs stay parented to the step, and every later
     // request `sandbox.exec` span parents to the live run span.
+    const routes = input.routes;
     worker = await startSandboxCallbackBridgeWorker({
       client,
       queueDir,
+      authorizeRequest: routes
+        ? (request) => authorizeSandboxCallbackBridgeRequestWithRoutes(request, routes)
+        : undefined,
       maxBodyBytes,
       getRuntimeParentContext: input.getRuntimeParentContext,
       runtimeSpan: input.runtimeSpan,

@@ -9,6 +9,7 @@ import {
   adapterExecutionTargetUsesManagedHome,
   ensureAdapterExecutionTargetRuntimeCommandInstalled,
   resolveAdapterExecutionTargetCwd,
+  resolveProjectProvisioningBridgeRoutes,
   runAdapterExecutionTargetProcess,
   runAdapterExecutionTargetShellCommand,
   type AdapterSshExecutionTarget,
@@ -387,5 +388,30 @@ describe("GitHub launcher lifecycle", () => {
       cwd: "/remote/workspace", timeoutMs: 5_000 });
     await expect(cleanupGitHubOperationLaunchers({ runId: "../other", target })).rejects.toThrow("Invalid GitHub launcher run ID");
     expect(runner.execute).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("project provisioning bridge routes", () => {
+  const companyId = "12345678-1234-1234-1234-123456789abc";
+  const otherCompanyId = "12345678-1234-1234-1234-123456789abd";
+  const agent = { id: "12345678-1234-1234-1234-123456789abe", companyId };
+  const projectWorkspaces = "/api/projects/12345678-1234-1234-1234-123456789abf/workspaces";
+
+  it("does not change routes without the exact host-configured agent", () => {
+    expect(resolveProjectProvisioningBridgeRoutes(agent, undefined)).toBeUndefined();
+    expect(resolveProjectProvisioningBridgeRoutes(agent, randomUUID())).toBeUndefined();
+  });
+
+  it("adds only project creation in the agent's company and workspace registration routes", () => {
+    const routes = resolveProjectProvisioningBridgeRoutes(agent, agent.id)!;
+    const allows = (method: string, path: string) =>
+      routes.some((route) => route.method === method && route.path.test(path));
+
+    expect(allows("POST", `/api/companies/${companyId}/projects`)).toBe(true);
+    expect(allows("POST", `/api/companies/${otherCompanyId}/projects`)).toBe(false);
+    expect(allows("GET", projectWorkspaces)).toBe(true);
+    expect(allows("POST", projectWorkspaces)).toBe(true);
+    expect(allows("DELETE", projectWorkspaces)).toBe(false);
+    expect(allows("POST", `${projectWorkspaces}/extra`)).toBe(false);
   });
 });

@@ -1041,6 +1041,8 @@ describe("evaluateCodexCredentialReadiness", () => {
 
   it.each([
     ["paperclip-projects", "/api/mcp/project-tools", true],
+    ["Paperclip projects", "/api/mcp/project-tools", true],
+    ["Paperclip connections", "/mcp/runtime-tools", true],
     ["paperclip-connections", "/mcp/runtime-tools", true],
     ["paperclip-assigned", "/mcp/gateways/gw_test-1", true],
     ["paperclip-projects", "/api/mcp/other", false],

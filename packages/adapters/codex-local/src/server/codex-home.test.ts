@@ -1052,7 +1052,7 @@ describe("evaluateCodexCredentialReadiness", () => {
     ["paperclip-projects", "/api/mcp/project-tools?extra=1", false],
     ["paperclip-projects", "/api/mcp/project-tools#extra", false],
     ["paperclip-projects", "https://user:pass@paperclip.example/api/mcp/project-tools", false],
-  ])("routes only governed MCP gateway %s at %s without provider prompts", async (name, endpointPath, governed) => {
+  ] as const)("routes only governed MCP gateway %s at %s without provider prompts", async (name, endpointPath, governed) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-mcp-policy-"));
     try {
       const configPath = path.join(root, "config.toml");

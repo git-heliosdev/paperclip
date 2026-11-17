@@ -358,6 +358,19 @@ function buildManagedMcpBlock(input: {
       `url = ${tomlString(url)}`,
       `http_headers = { Authorization = ${tomlString(`Bearer ${gateway.bearerToken}`)} }`,
     );
+    // Paperclip enforces tool grants and approvals at these authenticated routes.
+    // Let calls reach that gate without adding a second provider approval prompt.
+    const gatewayUrl = new URL(url);
+    const policyGatewayPaths: Record<string, RegExp> = {
+      "paperclip-projects": /^\/api\/mcp\/project-tools$/,
+      "paperclip-connections": /^\/mcp\/runtime-tools$/,
+      "paperclip-assigned": /^\/mcp\/gateways\/[a-zA-Z0-9_-]+$/,
+    };
+    if (gatewayUrl.origin === new URL(input.apiBaseUrl).origin
+      && !gatewayUrl.username && !gatewayUrl.password && !gatewayUrl.search && !gatewayUrl.hash
+      && policyGatewayPaths[gateway.name]?.test(gatewayUrl.pathname)) {
+      lines.push('default_tools_approval_mode = "approve"');
+    }
   });
   lines.push(MANAGED_MCP_BLOCK_END);
   return { block: lines.join("\n"), warnings };

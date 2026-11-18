@@ -293,6 +293,11 @@ export function createGitRemoteAuthProvider(
   };
 }
 
+function githubGitAccessReference(grant: typeof connectionGrants.$inferSelect, authKind?: string) {
+  const path = authKind === "api_key" ? "credentials.authorization" : "oauth.access_token";
+  return grant.credentialSecretRefs.find(ref => ref.configPath === path);
+}
+
 export async function resolveManagedGitHubIdentitySelection(
   db: Db,
   companyId: string,
@@ -306,6 +311,7 @@ export async function resolveManagedGitHubIdentitySelection(
   configured: boolean;
   identitySource?: "personal" | "dedicated";
   grant?: typeof connectionGrants.$inferSelect;
+  authKind?: string;
   error?: string;
 }> {
   const connections = await db.select().from(toolConnections).where(and(
@@ -377,8 +383,13 @@ export async function resolveManagedGitHubIdentitySelection(
         : "More than one managed GitHub identity matches this run",
     };
   }
-  const credentialIds = candidates.flatMap((grant) => grant.credentialSecretRefs
-    .filter((ref) => ref.configPath === "oauth.access_token").map((ref) => ref.secretId));
+  const accessReference = (grant: typeof connectionGrants.$inferSelect) => githubGitAccessReference(
+    grant, githubConnections.find(connection => connection.id === grant.connectionId)?.authKind,
+  );
+  const credentialIds = candidates.flatMap(grant => {
+    const ref = accessReference(grant);
+    return ref ? [ref.secretId] : [];
+  });
   const credentialRecords = candidates.length > 1 && credentialIds.length > 0
     ? await db.select({
         id: companySecrets.id, status: companySecrets.status, deletedAt: companySecrets.deletedAt,
@@ -394,7 +405,7 @@ export async function resolveManagedGitHubIdentitySelection(
   const hasCredentialRecord = (grant: typeof connectionGrants.$inferSelect) => {
     if (candidates.length === 1) return true;
     const github = grant.providerTenant?.github;
-    const ref = grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.access_token");
+    const ref = accessReference(grant);
     return Boolean(github && github.installationCount > 0 && github.repositoryCount > 0 && ref
       && credentialRecords.some((secret) => secret.id === ref.secretId
         && secret.status === "active" && !secret.deletedAt
@@ -426,7 +437,7 @@ export async function resolveManagedGitHubIdentitySelection(
     return { configured: true, identitySource, error: "The managed GitHub connection is unavailable" };
   }
   if (grant.status !== "active") return { configured: true, identitySource, error: "The managed GitHub identity must be reconnected" };
-  return { configured: true, identitySource, grant };
+  return { configured: true, identitySource, grant, authKind: connection.authKind };
 }
 
 export async function filterResolvedGitHubConnectionsForRun<T extends {
@@ -505,7 +516,7 @@ export async function resolveManagedGitHubCredential(
         heartbeatRunId: context.heartbeatRunId,
       });
     }
-    const accessRef = grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.access_token");
+    const accessRef = githubGitAccessReference(grant, selection.authKind);
     const github = grant.providerTenant?.github;
     if (!accessRef || !github) return { configured: true, identitySource: selection.identitySource, error: "The managed GitHub identity is incomplete" };
     if (github.installationCount < 1 || github.repositoryCount < 1) {
@@ -543,6 +554,12 @@ export async function resolveManagedGitHubCredential(
       token = resolved.value;
     } else {
       token = await secrets.resolveSecretValue(companyId, accessRef.secretId, accessRef.versionSelector ?? "latest", { accessContext });
+    }
+    if (selection.authKind === "api_key") {
+      token = token.trim().replace(/^(?:Bearer|token)\s+/i, "");
+      if (!/^(?:ghp_[A-Za-z0-9]+|github_pat_[A-Za-z0-9_]+)$/.test(token)) {
+        return { configured: true, identitySource: selection.identitySource, error: "The managed GitHub personal access token has an invalid format" };
+      }
     }
     return {
       configured: true, identitySource: selection.identitySource,

@@ -7,8 +7,18 @@ import { callTaskWorkspaceTool } from "./task-workspace-tools.js";
 export const PROJECT_TOOL_NAMES = ["create_project", "list_project_repositories", "list_projects"];
 const TASK_TOOL_NAMES = ["create_task", "set_task_title", "get_workspace", "list_workspaces", "select_workspace", "prepare_repository"];
 const TASK_WORKSPACE_TOOL_NAMES = new Set(["get_workspace", "list_workspaces", "select_workspace", "prepare_repository"]);
+const continueTaskSchema = z.object({
+  reason: z.string().trim().min(1).max(500),
+  requestKey: z.string().trim().min(1).max(150),
+}).strict();
+const continueTaskTool = {
+  name: "continue_task",
+  description: "Queue an on-demand continuation for the active task after making concrete progress. The existing scheduler decides when it can run; this does not bypass task blockers or execution policy. Reuse requestKey if retrying the same continuation.",
+  inputSchema: z.toJSONSchema(continueTaskSchema),
+};
+
 export function projectToolDefinitions(workMode: string, includeTask = false) {
-  return CAPABILITY_SEMANTIC_TOOL_CATALOG.filter(tool =>
+  const definitions = CAPABILITY_SEMANTIC_TOOL_CATALOG.filter(tool =>
     (PROJECT_TOOL_NAMES.includes(tool.operationId) || includeTask && TASK_TOOL_NAMES.includes(tool.operationId))
     && tool.allowedModes.includes(workMode as "standard" | "ask" | "planning" | "skill_test"),
   ).map(tool => ({ name: tool.operationId, description: tool.description,
@@ -16,6 +26,9 @@ export function projectToolDefinitions(workMode: string, includeTask = false) {
       ? z.toJSONSchema(createProjectSchema.extend({ idempotencyKey: z.string().min(1).max(255) }))
       : tool.inputSchema,
   }));
+  return includeTask && ["standard", "skill_test"].includes(workMode)
+    ? [...definitions, continueTaskTool]
+    : definitions;
 }
 
 /** All transports use the normal authenticated API, including its validation and audit path. */
@@ -33,6 +46,26 @@ export async function callProjectTool(input: {
       companyId: input.companyId,
       issueId: input.issueId,
     });
+  }
+  if (input.name === "continue_task") {
+    const continuation = continueTaskSchema.parse(args);
+    const path = `/agents/${encodeURIComponent(input.agentId)}/wakeup`;
+    const body = {
+      source: "on_demand",
+      triggerDetail: "callback",
+      reason: continuation.reason,
+      idempotencyKey: `continue-task:${input.issueId}:${continuation.requestKey}`,
+      payload: { issueId: input.issueId },
+    };
+    const response = await fetch(`${input.apiUrl.replace(/\/+$/, "").replace(/\/api$/, "")}/api${path}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${input.token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(60_000),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(typeof result.error === "string" ? result.error : `Task continuation failed (${response.status})`);
+    return result;
   }
   const page = input.name === "list_projects" ? projectDiscoverySchema.parse(args) : null;
   let path = `/companies/${input.companyId}/projects`;

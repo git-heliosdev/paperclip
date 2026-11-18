@@ -10,6 +10,10 @@ const TASK_WORKSPACE_TOOL_NAMES = new Set(["get_workspace", "list_workspaces", "
 const taskIdSchema = z.string().uuid().optional();
 const taskReadSchema = z.object({ taskId: taskIdSchema }).strict();
 const listAgentsSchema = z.object({}).strict();
+const addTaskCommentSchema = z.object({
+  taskId: taskIdSchema,
+  body: z.string().trim().min(1).max(32_000),
+}).strict();
 const updateTaskFieldsSchema = z.object({
   taskId: taskIdSchema,
   status: z.enum(ISSUE_STATUSES).optional(),
@@ -33,13 +37,18 @@ const updateTaskTool = {
   description: "Update the current task or another task in this company. Only status and projectId can be changed.",
   inputSchema: updateTaskInputSchema,
 };
+const addTaskCommentTool = {
+  name: "add_task_comment",
+  description: "Post a plain text comment on the current task or another task you are authorized to comment on. The normal API enforces task access and comment policy.",
+  inputSchema: z.toJSONSchema(addTaskCommentSchema),
+};
 const continueTaskSchema = z.object({
   reason: z.string().trim().min(1).max(500),
   requestKey: z.string().trim().min(1).max(150),
 }).strict();
 const continueTaskTool = {
   name: "continue_task",
-  description: "Queue an on-demand continuation for the active task after making concrete progress. The existing scheduler decides when it can run; this does not bypass task blockers or execution policy. Reuse requestKey if retrying the same continuation.",
+  description: "Queue a separate fresh-session continuation for the active task after making concrete progress. If its run is still running, the wake waits for that run to finish and then enters normal admission; ordinary blockers and execution policy still apply. Reuse requestKey if retrying the same continuation.",
   inputSchema: z.toJSONSchema(continueTaskSchema),
 };
 
@@ -55,7 +64,7 @@ export function projectToolDefinitions(workMode: string, includeTask = false) {
   if (!includeTask || !["standard", "skill_test", "ask", "planning"].includes(workMode)) return definitions;
   const withReadTools = [...definitions, ...taskContextToolDefinitions];
   return ["standard", "skill_test"].includes(workMode)
-    ? [...withReadTools, updateTaskTool, continueTaskTool]
+    ? [...withReadTools, updateTaskTool, addTaskCommentTool, continueTaskTool]
     : withReadTools;
 }
 
@@ -65,18 +74,20 @@ export async function callProjectTool(input: {
   companyId: string; issueId: string; agentId: string; conversation: boolean;
 }) {
   const args = input.arguments;
-  if (["get_task", "get_task_comments", "list_agents", "update_task"].includes(input.name)) {
+  if (["get_task", "get_task_comments", "list_agents", "update_task", "add_task_comment"].includes(input.name)) {
     if (input.name === "list_agents") listAgentsSchema.parse(args);
     const taskId = input.name === "list_agents" ? input.issueId
       : input.name === "update_task" ? updateTaskSchema.parse(args).taskId ?? input.issueId
+        : input.name === "add_task_comment" ? addTaskCommentSchema.parse(args).taskId ?? input.issueId
         : taskReadSchema.parse(args).taskId ?? input.issueId;
     const baseUrl = `${input.apiUrl.replace(/\/+$/, "").replace(/\/api$/, "")}/api`;
     const path = input.name === "list_agents" ? `/companies/${encodeURIComponent(input.companyId)}/agents`
       : input.name === "get_task_comments" ? `/issues/${encodeURIComponent(taskId)}/comments`
-        : input.name === "get_task" ? `/issues/${encodeURIComponent(taskId)}`
+      : input.name === "get_task" ? `/issues/${encodeURIComponent(taskId)}`
+        : input.name === "add_task_comment" ? `/issues/${encodeURIComponent(taskId)}/comments`
           : `/issues/${encodeURIComponent(taskId)}`;
     const response = await fetch(`${baseUrl}${path}`, {
-      method: input.name === "update_task" ? "PATCH" : "GET",
+      method: input.name === "update_task" ? "PATCH" : input.name === "add_task_comment" ? "POST" : "GET",
       headers: { Authorization: `Bearer ${input.token}`, "Content-Type": "application/json" },
       ...(input.name === "update_task" ? (() => {
         const update = updateTaskSchema.parse(args);
@@ -85,6 +96,7 @@ export async function callProjectTool(input: {
           ...(update.projectId !== undefined ? { projectId: update.projectId } : {}),
         }) };
       })() : {}),
+      ...(input.name === "add_task_comment" ? { body: JSON.stringify({ body: addTaskCommentSchema.parse(args).body }) } : {}),
       signal: AbortSignal.timeout(60_000),
     });
     const result = await response.json();
@@ -102,6 +114,11 @@ export async function callProjectTool(input: {
           .filter(key => comment[key] !== undefined).map(key => [key, comment[key]]),
       ));
     }
+    if (input.name === "add_task_comment") return Object.fromEntries(
+      ["id", "issueId", "body", "createdAt", "authorAgentId", "authorUserId"]
+        .filter(key => result && typeof result === "object" && key in result && result[key] !== undefined)
+        .map(key => [key, result[key]]),
+    );
     if (input.name === "get_task") return Object.fromEntries([
       "id", "companyId", "identifier", "title", "description", "status", "priority", "assigneeAgentId",
       "assigneeUserId", "projectId", "parentId", "updatedAt", "completedAt",
@@ -125,7 +142,8 @@ export async function callProjectTool(input: {
       source: "on_demand",
       triggerDetail: "callback",
       reason: continuation.reason,
-      idempotencyKey: `continue-task:${input.issueId}:${continuation.requestKey}`,
+      idempotencyKey: `continue-task-v2:${input.issueId}:${continuation.requestKey}`,
+      forceFreshSession: true,
       payload: { issueId: input.issueId },
     };
     const response = await fetch(`${input.apiUrl.replace(/\/+$/, "").replace(/\/api$/, "")}/api${path}`, {

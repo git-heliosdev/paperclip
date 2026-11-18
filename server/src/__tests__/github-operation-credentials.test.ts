@@ -117,6 +117,7 @@ const support = await getEmbeddedPostgresTestSupport();
       input: Awaited<ReturnType<typeof seed>>,
       user: string,
       dedicated = false,
+      authKind: "oauth" | "api_key" = "oauth",
     ) {
       const applicationId = randomUUID(),
         connectionId = randomUUID(),
@@ -136,6 +137,7 @@ const support = await getEmbeddedPostgresTestSupport();
         name: connectionId,
         uid: connectionId,
         transport: "mcp_remote",
+        authKind,
         status: "active",
         enabled: true,
         credentialPolicy: dedicated ? "per_agent" : "per_user",
@@ -174,7 +176,7 @@ const support = await getEmbeddedPostgresTestSupport();
         credentialSecretRefs: [
           {
             secretId,
-            configPath: "oauth.access_token",
+            configPath: authKind === "api_key" ? "credentials.authorization" : "oauth.access_token",
             versionSelector: "latest",
           },
         ],
@@ -318,6 +320,18 @@ const support = await getEmbeddedPostgresTestSupport();
         });
       },
     );
+
+    it("resolves only the installed requester's PAT and strips the HTTP authorization scheme", async () => {
+      const input = await seed();
+      const scoped = await grant(input, "A", false, "api_key");
+      vault.resolveUserSecretValue.mockResolvedValueOnce({ value: "Bearer github_pat_fixture_42" });
+      const valid = await resolveGitHubOperationCredentials(db, input);
+      expect(valid).toMatchObject({status: "available", grantId: scoped.id, env: {GH_TOKEN: "github_pat_fixture_42"}});
+      vault.resolveUserSecretValue.mockResolvedValueOnce({ value: "Basic unrelated-header" });
+      expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({status: "unavailable", env: {}});
+      await db.delete(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, scoped.connectionId));
+      expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({status: "absent", env: {}});
+    });
 
     it("retries credential acquisition once using another grant for the same account", async () => {
       const input = await seed();

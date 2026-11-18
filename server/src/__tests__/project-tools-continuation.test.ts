@@ -48,7 +48,8 @@ describe("project MCP continue_task", () => {
         source: "on_demand",
         triggerDetail: "callback",
         reason: "Continue after repository setup",
-        idempotencyKey: "continue-task:issue-bound:continue-1",
+        idempotencyKey: "continue-task-v2:issue-bound:continue-1",
+        forceFreshSession: true,
         payload: { issueId: "issue-bound" },
       }),
     });
@@ -62,9 +63,10 @@ describe("project MCP continue_task", () => {
     await expect(callProjectTool(base)).resolves.toEqual(skipped);
     await callProjectTool({ ...base, issueId: "another-issue" });
     expect(JSON.parse(fetcher.mock.calls[0]![1].body as string).idempotencyKey)
-      .toBe("continue-task:issue-bound:continue-1");
+      .toBe("continue-task-v2:issue-bound:continue-1");
     expect(JSON.parse(fetcher.mock.calls[1]![1].body as string).idempotencyKey)
-      .toBe("continue-task:another-issue:continue-1");
+      .toBe("continue-task-v2:another-issue:continue-1");
+    expect(JSON.parse(fetcher.mock.calls[0]![1].body as string).forceFreshSession).toBe(true);
   });
 
   it.each([
@@ -73,6 +75,7 @@ describe("project MCP continue_task", () => {
     { reason: "Continue", requestKey: "key-1", source: "assignment" },
     { reason: "Continue", requestKey: "key-1", triggerDetail: "manual" },
     { reason: "Continue", requestKey: "key-1", payload: { issueId: "issue-spoofed" } },
+    { reason: "Continue", requestKey: "key-1", forceFreshSession: false },
     { reason: "  ", requestKey: "key-1" },
     { reason: "Continue", requestKey: "  " },
   ])("rejects untrusted or malformed arguments before fetching: %j", async arguments_ => {

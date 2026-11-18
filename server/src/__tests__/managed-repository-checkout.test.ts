@@ -33,6 +33,51 @@ describe("atomic managed repository publication", () => {
     await ensureManagedRepositoriesIgnored(source);
     expect(await readFile(path.join(source, ".git", "info", "exclude"), "utf8")).toContain("/.paperclip-repositories/");
   });
+  it("preserves an empty task-root .git placeholder and prepares nested catalog repositories", async () => {
+    const { root, source } = await fixture();
+    const taskRoot = path.join(root, "isolated-task");
+    const gitPlaceholder = path.join(taskRoot, ".git");
+    await mkdir(gitPlaceholder, { recursive: true });
+
+    await expect(ensureManagedRepositoriesIgnored(taskRoot)).resolves.toBeUndefined();
+    expect(await readdir(gitPlaceholder)).toEqual([]);
+
+    const repository = path.join(taskRoot, ".paperclip-repositories", "catalog-repo");
+    await expect(materializeManagedProjectWorkspace(repository, {
+      repoUrl: source,
+      localSource: source,
+    })).resolves.toMatchObject({ cwd: repository, warning: null });
+    expect(await readFile(path.join(repository, "source.txt"), "utf8")).toBe("initial\n");
+    expect(await readdir(gitPlaceholder)).toEqual([]);
+    await expect(ensureManagedRepositoriesIgnored(taskRoot)).resolves.toBeUndefined();
+  });
+  it.each([
+    ["nonempty invalid Git directory", async (cwd: string) => {
+      await mkdir(path.join(cwd, ".git"));
+      await writeFile(path.join(cwd, ".git", "broken-metadata"), "keep me\n");
+    }],
+    ["invalid Git file", async (cwd: string) => {
+      await writeFile(path.join(cwd, ".git"), "gitdir: missing-worktree\n");
+    }],
+  ])("preserves errors for %s instead of treating it as an empty placeholder", async (_name, setup) => {
+    const root = await mkdtemp(path.join(tmpdir(), "paperclip-invalid-task-git-"));
+    directories.push(root);
+    await setup(root);
+    await expect(ensureManagedRepositoriesIgnored(root)).rejects.toThrow(/not a git repository/i);
+    if (_name === "nonempty invalid Git directory") {
+      expect(await readFile(path.join(root, ".git", "broken-metadata"), "utf8")).toBe("keep me\n");
+    } else {
+      expect(await readFile(path.join(root, ".git"), "utf8")).toBe("gitdir: missing-worktree\n");
+    }
+  });
+  it("does not adopt an empty .git placeholder as a managed checkout", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "paperclip-empty-git-placeholder-"));
+    directories.push(root);
+    await mkdir(path.join(root, ".git"));
+    const result = await materializeManagedProjectWorkspace(root, { repoUrl: "https://github.com/example/repo" });
+    expect(result.warning).toMatch(/already exists but is not a git checkout/);
+    expect(await readdir(path.join(root, ".git"))).toEqual([]);
+  });
   it("writes the pinned receipt inside the clone before making it visible", async () => {
     const { source, target } = await fixture();
     const result = await materializeManagedProjectWorkspace(target, { repoUrl: "https://github.com/test/source", localSource: source, beforePublish: async clone => {

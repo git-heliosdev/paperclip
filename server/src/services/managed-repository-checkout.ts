@@ -37,11 +37,14 @@ export async function materializeManagedProjectWorkspace(
     return { cwd, warning: null };
   }
 
-  const hasAdoptableGitDir = () => measureRunPhase("workspace.checkout.lookup", () =>
-    fs
-      .stat(path.resolve(cwd, ".git"))
-      .then((entry) => entry.isDirectory())
-      .catch(() => false));
+  const hasAdoptableGitDir = () => measureRunPhase("workspace.checkout.lookup", async () => {
+    const gitPath = path.resolve(cwd, ".git");
+    const entry = await fs.stat(gitPath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    return Boolean(entry?.isDirectory() && (await fs.readdir(gitPath)).length > 0);
+  });
   if (await hasAdoptableGitDir()) {
     return { cwd, warning: null };
   }
@@ -163,12 +166,20 @@ export async function materializeManagedProjectWorkspace(
 
 
 export async function ensureManagedRepositoriesIgnored(cwd: string): Promise<void> {
-  const gitEntry = await fs.lstat(path.join(cwd, ".git")).catch(() => null);
+  const gitPath = path.join(cwd, ".git");
+  const gitEntry = await fs.lstat(gitPath).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
   if (!gitEntry) return;
   if (gitEntry.isSymbolicLink()) throw new Error("Workspace Git metadata must not be a symlink");
+  if (gitEntry.isDirectory() && (await fs.readdir(gitPath)).length === 0) return;
   const excludePath = await execFile("git", ["-C", cwd, "rev-parse", "--git-path", "info/exclude"], { timeout: 10_000 })
     .then((result) => path.resolve(cwd, result.stdout.trim()));
-  const exclude = await fs.readFile(excludePath, "utf8").catch(() => "");
+  const exclude = await fs.readFile(excludePath, "utf8").catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return "";
+    throw error;
+  });
   if (!exclude.split(/\r?\n/).includes(`/${PROJECT_REPOSITORIES_DIR}/`)) {
     await fs.mkdir(path.dirname(excludePath), { recursive: true });
     await fs.appendFile(excludePath, `\n/${PROJECT_REPOSITORIES_DIR}/\n`);

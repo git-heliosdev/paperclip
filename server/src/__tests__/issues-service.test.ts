@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { asc, eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { and, asc, eq } from "drizzle-orm";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { sql } from "drizzle-orm";
 import {
   activityLog,
@@ -2903,6 +2903,151 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(byId.get(multibyteBoundaryId)?.description).toHaveLength(1200);
     expect(byId.get(multibyteBoundaryId)?.description?.endsWith("—")).toBe(true);
     expect(byId.get(multibyteBoundaryId)?.descriptionTruncated).toBe(true);
+  });
+});
+
+describeEmbeddedPostgres("private project access for assigned agents", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-private-project-assignee-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  beforeEach(() => {
+    vi.stubEnv("PAPERCLIP_PROJECT_PROVISIONING_AGENT_ID", "");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  afterAll(async () => {
+    await db?.$client.end({ timeout: 1 }).catch(() => {});
+    await tempDb?.cleanup();
+  });
+
+  async function seed(companyId: string, agentId: string, projectId: string, visibility: "private" | "open" = "private", createdByAgentId?: string) {
+    await seedIssueCompany(db, companyId);
+    await seedCodexCoder(db, companyId, agentId);
+    if (createdByAgentId && createdByAgentId !== agentId) await seedCodexCoder(db, companyId, createdByAgentId);
+    await db.insert(projects).values({ id: projectId, companyId, name: "Delivery project", status: "in_progress", visibility });
+    if (createdByAgentId) await db.insert(activityLog).values({
+      companyId,
+      actorType: "agent",
+      actorId: createdByAgentId,
+      agentId: createdByAgentId,
+      action: "project.created",
+      entityType: "project",
+      entityId: projectId,
+    });
+  }
+
+  async function hasProjectAgent(projectId: string, agentId: string) {
+    return db.select({ id: projectAccessMembers.id }).from(projectAccessMembers)
+      .where(and(eq(projectAccessMembers.projectId, projectId), eq(projectAccessMembers.subjectType, "agent"), eq(projectAccessMembers.subjectId, agentId)))
+      .then((rows) => rows.length > 0);
+  }
+
+  it("grants only the same-company assignee access on private project creates and project-only moves", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const moveAgentId = randomUUID();
+    const projectId = randomUUID();
+    const moveProjectId = randomUUID();
+    const openProjectId = randomUUID();
+    const provisionerAgentId = randomUUID();
+    await seed(companyId, agentId, projectId, "private", provisionerAgentId);
+    await seedCodexCoder(db, companyId, moveAgentId);
+    await db.insert(projects).values({ id: moveProjectId, companyId, name: "Move target", status: "in_progress", visibility: "private" });
+    await db.insert(activityLog).values({ companyId, actorType: "agent", actorId: provisionerAgentId, agentId: provisionerAgentId, action: "project.created", entityType: "project", entityId: moveProjectId });
+    await db.insert(projects).values({ id: openProjectId, companyId, name: "Open project", status: "in_progress", visibility: "open" });
+    await db.insert(activityLog).values({ companyId, actorType: "agent", actorId: provisionerAgentId, agentId: provisionerAgentId, action: "project.created", entityType: "project", entityId: openProjectId });
+    vi.stubEnv("PAPERCLIP_PROJECT_PROVISIONING_AGENT_ID", provisionerAgentId);
+
+    await svc.create(companyId, { title: "Private handoff", assigneeAgentId: agentId, projectId });
+    expect(await hasProjectAgent(projectId, agentId)).toBe(true);
+
+    const moved = await svc.create(companyId, { title: "Move into project", assigneeAgentId: moveAgentId });
+    expect(await hasProjectAgent(moveProjectId, moveAgentId)).toBe(false);
+    await expect(svc.update(moved.id, { projectId: moveProjectId }))
+      .resolves.toMatchObject({ id: moved.id, projectId: moveProjectId, assigneeAgentId: moveAgentId });
+    expect(await hasProjectAgent(moveProjectId, moveAgentId)).toBe(true);
+
+    await svc.update(moved.id, { assigneeAgentId: agentId });
+    expect(await hasProjectAgent(moveProjectId, moveAgentId)).toBe(true);
+    expect(await hasProjectAgent(moveProjectId, agentId)).toBe(true);
+
+    const noProject = await svc.create(companyId, { title: "No project", assigneeAgentId: agentId });
+    const unassigned = await svc.create(companyId, { title: "No assignee", projectId });
+    const openProject = await svc.create(companyId, { title: "Open project task", assigneeAgentId: agentId, projectId: openProjectId });
+    expect(noProject.projectId).toBeNull();
+    expect(unassigned.assigneeAgentId).toBeNull();
+    expect(openProject.projectId).toBe(openProjectId);
+    expect(await hasProjectAgent(openProjectId, agentId)).toBe(false);
+
+    const legacyIssueId = randomUUID();
+    await db.insert(issues).values({ id: legacyIssueId, companyId, projectId, title: "Legacy private assignment", status: "todo", priority: "medium", visibility: "private", assigneeAgentId: moveAgentId });
+    await svc.update(legacyIssueId, { title: "Unrelated edit" });
+    expect(await hasProjectAgent(projectId, moveAgentId)).toBe(false);
+  });
+
+  it("does not grant cross-company agents or projects access", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    const agentId = randomUUID();
+    const otherAgentId = randomUUID();
+    const projectId = randomUUID();
+    const otherProjectId = randomUUID();
+    const provisionerAgentId = randomUUID();
+    await seed(companyId, agentId, projectId, "private", provisionerAgentId);
+    await seed(otherCompanyId, otherAgentId, otherProjectId);
+    vi.stubEnv("PAPERCLIP_PROJECT_PROVISIONING_AGENT_ID", provisionerAgentId);
+
+    await expect(svc.create(companyId, { title: "Foreign assignee", projectId, assigneeAgentId: otherAgentId }))
+      .rejects.toMatchObject({ status: 422 });
+    await expect(svc.create(companyId, { title: "Foreign project", projectId: otherProjectId, assigneeAgentId: agentId }))
+      .rejects.toMatchObject({ status: 404 });
+    expect(await hasProjectAgent(projectId, otherAgentId)).toBe(false);
+    expect(await hasProjectAgent(otherProjectId, agentId)).toBe(false);
+  });
+
+  it("does not share nonprovisioned projects or provisioned projects when the feature is unconfigured", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const provisionerAgentId = randomUUID();
+    const projectId = randomUUID();
+    const nonProvisionedProjectId = randomUUID();
+    await seed(companyId, agentId, projectId, "private", provisionerAgentId);
+    await db.insert(projects).values({ id: nonProvisionedProjectId, companyId, name: "Manual private project", status: "in_progress", visibility: "private" });
+    vi.stubEnv("PAPERCLIP_PROJECT_PROVISIONING_AGENT_ID", provisionerAgentId);
+    await svc.create(companyId, { title: "Manual private project task", assigneeAgentId: agentId, projectId: nonProvisionedProjectId });
+    expect(await hasProjectAgent(nonProvisionedProjectId, agentId)).toBe(false);
+
+    vi.stubEnv("PAPERCLIP_PROJECT_PROVISIONING_AGENT_ID", "");
+    await svc.create(companyId, { title: "Unconfigured provisioned project task", assigneeAgentId: agentId, projectId });
+    expect(await hasProjectAgent(projectId, agentId)).toBe(false);
+  });
+
+  it("rolls back project access when issue creation later fails in the transaction", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const projectId = randomUUID();
+    const provisionerAgentId = randomUUID();
+    await seed(companyId, agentId, projectId, "private", provisionerAgentId);
+    vi.stubEnv("PAPERCLIP_PROJECT_PROVISIONING_AGENT_ID", provisionerAgentId);
+
+    await expect(svc.create(companyId, {
+      title: "Failed transaction",
+      projectId,
+      assigneeAgentId: agentId,
+      labelIds: [randomUUID()],
+    })).rejects.toBeDefined();
+
+    expect(await hasProjectAgent(projectId, agentId)).toBe(false);
   });
 });
 

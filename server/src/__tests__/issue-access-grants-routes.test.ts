@@ -313,6 +313,12 @@ describeEmbeddedPostgres("issue access grant and locked edge routes", { concurre
       .patch(`/api/issues/${fixture.privateIssueId}`)
       .send({ assigneeAgentId: fixture.assignedAgent.id })
       .expect(404);
+    const unauthorizedProjectMembers = await db.select().from(projectAccessMembers);
+    expect(unauthorizedProjectMembers.filter((member) =>
+      member.projectId === fixture.privateProject.id &&
+      member.subjectType === "agent" &&
+      member.subjectId === fixture.assignedAgent.id,
+    )).toHaveLength(0);
     const openShare = await request(ownerApp)
       .post(`/api/issues/${fixture.openIssue.id}/access-grants`)
       .send({ subjectType: "agent", subjectId: fixture.sharedAgent.id });

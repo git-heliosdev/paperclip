@@ -1,7 +1,7 @@
 import { skillAccessRequestContext } from "../services/skill-access.js";
 import { createHash } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
-import { activityLog } from "@paperclipai/db";
+import { activityLog, issues } from "@paperclipai/db";
 import { projectToolContext } from "../services/project-tool-context.js";
 import { museExternalAgents, withExternalExecutionAdmission } from "../modules/external-agents/index.js";
 import { parseNativeExecutionInput } from "../vendor/paperclip-runner/index.js";
@@ -232,6 +232,39 @@ export function projectRoutes(db: Db) {
     }
   }
 
+  async function addProvisioningParentAgentAsPrivateProjectPrincipal(
+    dbOrTx: Db,
+    project: { id: string; companyId: string; visibility: string },
+    runIssue: typeof issues.$inferSelect | null,
+    actorAgentId: string | null,
+  ) {
+    const deliveryAgentId = process.env.PAPERCLIP_PROJECT_PROVISIONING_AGENT_ID?.trim();
+    if (!deliveryAgentId || project.visibility !== "private" || !runIssue?.parentId ||
+      !runIssue.createdByAgentId || !runIssue.responsibleUserId || actorAgentId !== deliveryAgentId ||
+      runIssue.assigneeAgentId !== deliveryAgentId) return;
+    const [parent] = await dbOrTx.select({
+      id: issues.id,
+      assigneeAgentId: issues.assigneeAgentId,
+      responsibleUserId: issues.responsibleUserId,
+    }).from(issues).where(and(
+      eq(issues.id, runIssue.parentId),
+      eq(issues.companyId, project.companyId),
+    )).limit(1).for("no key update");
+    if (!parent || parent.assigneeAgentId !== runIssue.createdByAgentId ||
+      parent.responsibleUserId !== runIssue.responsibleUserId) return;
+    const [requestingAgent] = await dbOrTx.select({ id: agents.id }).from(agents).where(and(
+      eq(agents.id, parent.assigneeAgentId),
+      eq(agents.companyId, project.companyId),
+    )).limit(1);
+    if (!requestingAgent) return;
+    await ensureProjectAccessMember(dbOrTx, {
+      companyId: project.companyId,
+      projectId: project.id,
+      subjectType: "agent",
+      subjectId: requestingAgent.id,
+    });
+  }
+
   async function enrichProjectAccessMembers(rows: Array<typeof projectAccessMembers.$inferSelect>) {
     const agentIds = rows.filter((row) => row.subjectType === "agent").map((row) => row.subjectId);
     const userIds = rows.filter((row) => row.subjectType === "user").map((row) => row.subjectId);
@@ -396,6 +429,7 @@ export function projectRoutes(db: Db) {
     const fingerprint = createHash("sha256").update(JSON.stringify({ projectData, workspace, repositoryIds, repositoryUrls })).digest("hex");
     const receiptKey = idempotencyKey ? `project:${companyId}:${actor.actorId}:${runContext?.issue.id ?? "board"}:${idempotencyKey}` : null;
     const result = await db.transaction(async (tx) => {
+      let mutationRunContext = runContext;
       if (receiptKey) {
         await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${receiptKey}, 0))`);
       }
@@ -407,6 +441,7 @@ export function projectRoutes(db: Db) {
         // admission wait and ahead of both receipt replay and project creation.
         await withExternalExecutionAdmission(tx, actorCompanyId, agentId, runId, async () => {
           const current = await projectToolContext(tx as unknown as Db, museActor, true);
+          mutationRunContext = current;
           try {
             const execution = parseNativeExecutionInput(current.run.runnerProfileJson?.nativeExecutionInput);
             const broker = museExternalAgents(db);
@@ -434,10 +469,18 @@ export function projectRoutes(db: Db) {
           return { project, publication: null, duplicate: true };
         }
       }
-      if (runContext && !museActor) await projectToolContext(tx as unknown as Db, req.actor, true);
+      if (runContext && !museActor) mutationRunContext = await projectToolContext(tx as unknown as Db, req.actor, true);
       const service = projectService(tx as unknown as Db);
       const project = repositories ? await service.createWithRepositories(companyId, projectData, repositories) : await service.create(companyId, projectData);
-      if (project.visibility === "private") await addActorAsPrivateProjectPrincipal(req, project, tx as unknown as Db);
+      if (project.visibility === "private") {
+        await addActorAsPrivateProjectPrincipal(req, project, tx as unknown as Db);
+        await addProvisioningParentAgentAsPrivateProjectPrincipal(
+          tx as unknown as Db,
+          project,
+          mutationRunContext?.issue ?? null,
+          req.actor.type === "agent" ? req.actor.agentId : null,
+        );
+      }
       const attachedUrls = new Set((repositories ?? []).map(repo => repo.url.toLowerCase()));
       const registeredUrls: typeof urlRepositories = [];
       for (const repo of urlRepositories) {

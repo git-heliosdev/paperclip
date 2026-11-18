@@ -90,6 +90,7 @@ import {
   toolInvocations,
   issues,
   labels,
+  projectAccessMembers,
   projectWorkspaces,
   projects,
   toolConnections,
@@ -3615,6 +3616,50 @@ export async function ensureAssignmentIssueAccessGrant(
     },
   });
   return grant;
+}
+
+/** Configured project-provisioner work grants its explicitly assigned agent access to that project. */
+async function ensurePrivateProjectAssigneeAccess(
+  dbOrTx: DbTransaction,
+  input: { companyId: string; projectId: string | null; assigneeAgentId: string | null },
+) {
+  const provisionerAgentId = process.env.PAPERCLIP_PROJECT_PROVISIONING_AGENT_ID?.trim();
+  if (!provisionerAgentId || !input.projectId || !input.assigneeAgentId) return null;
+  const [project] = await dbOrTx
+    .select({ id: projects.id })
+    .from(projects)
+    .where(and(
+      eq(projects.id, input.projectId),
+      eq(projects.companyId, input.companyId),
+      eq(projects.visibility, "private"),
+    ))
+    .limit(1);
+  if (!project) return null;
+  const [provisioningReceipt] = await dbOrTx
+    .select({ id: activityLog.id })
+    .from(activityLog)
+    .where(and(
+      eq(activityLog.companyId, input.companyId),
+      eq(activityLog.action, "project.created"),
+      eq(activityLog.entityType, "project"),
+      eq(activityLog.entityId, project.id),
+      eq(activityLog.actorType, "agent"),
+      eq(activityLog.actorId, provisionerAgentId),
+    ))
+    .limit(1);
+  if (!provisioningReceipt) return null;
+  const [assignee] = await dbOrTx
+    .select({ id: agents.id })
+    .from(agents)
+    .where(and(eq(agents.id, input.assigneeAgentId), eq(agents.companyId, input.companyId)))
+    .limit(1);
+  if (!assignee) return null;
+  return dbOrTx.insert(projectAccessMembers).values({
+    companyId: input.companyId,
+    projectId: project.id,
+    subjectType: "agent",
+    subjectId: assignee.id,
+  }).onConflictDoNothing().returning().then((rows) => rows[0] ?? null);
 }
 
 async function terminalExplicitBlockersByRoot(
@@ -10387,6 +10432,11 @@ export function issueService(db: Db) {
         }
         if (values.monitorNextCheckAt) await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
         const [issue] = await tx.insert(issues).values(values).returning();
+        await ensurePrivateProjectAssigneeAccess(tx, {
+          companyId: issue.companyId,
+          projectId: issue.projectId,
+          assigneeAgentId: issue.assigneeAgentId,
+        });
         await attachOwnedDraftImages(tx, issue, issue.description, { userId: issueData.createdByUserId, agentId: issueData.createdByAgentId });
         if (issue.visibility === "private" && !inheritedPrivateSubtree && issueData.createdByAgentId) {
           await tx.insert(issueAccessGrants).values({
@@ -11253,6 +11303,13 @@ export function issueService(db: Db) {
           .returning()
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!updated) return null;
+        if (issueData.projectId !== undefined || issueData.assigneeAgentId !== undefined) {
+          await ensurePrivateProjectAssigneeAccess(tx, {
+            companyId: updated.companyId,
+            projectId: updated.projectId,
+            assigneeAgentId: updated.assigneeAgentId,
+          });
+        }
         if (workspaceSelectionActor && updated.workspaceBindingRevision !== receiptExisting.workspaceBindingRevision) {
           await executionWorkspaceService(db).assertTaskWorkspaceUpdateAccess({
             task: updated, actor: workspaceSelectionActor,

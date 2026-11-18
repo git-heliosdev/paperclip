@@ -2,9 +2,9 @@ import { projectService } from "../services/projects.js";
 import { callProjectTool } from "../services/project-tools.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { agents, issues, heartbeatRuns, projects, companyMemberships, executionWorkspaces } from "@paperclipai/db";
+import { agents, issues, heartbeatRuns, projects, projectAccessMembers, companyMemberships, executionWorkspaces } from "@paperclipai/db";
 import { startRunnerApiTestServer } from "./helpers/runner-api-server.js";
 import { issueService } from "../services/issues.js";
 import { documentService } from "../services/documents.js";
@@ -18,7 +18,44 @@ const support = await getEmbeddedPostgresTestSupport();
   const originalSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
   beforeAll(async () => { process.env.PAPERCLIP_AGENT_JWT_SECRET = randomUUID(); server = await startRunnerApiTestServer(); }, 60_000);
   afterAll(async () => { await server?.close(); if (originalSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET; else process.env.PAPERCLIP_AGENT_JWT_SECRET = originalSecret; });
+  afterEach(() => vi.unstubAllEnvs());
   const call = (fixture: Awaited<ReturnType<typeof server.fixture>>, tool: string, args: Record<string, unknown>) => fixture.authority.execute({ tool, arguments: args, callId: randomUUID() });
+
+  async function configureProjectProvisioningParent(f: Awaited<ReturnType<typeof server.fixture>>, options: {
+    creatorAgentId?: string;
+    parentAssigneeAgentId?: string;
+    parentResponsibleUserId?: string | null;
+    parentCompanyId?: string;
+  } = {}) {
+    const creatorAgentId = options.creatorAgentId ?? randomUUID();
+    const parentAssigneeAgentId = options.parentAssigneeAgentId ?? creatorAgentId;
+    await server.db.insert(agents).values([creatorAgentId, parentAssigneeAgentId]
+      .filter((id, index, all) => all.indexOf(id) === index)
+      .filter(id => id !== f.agentId)
+      .map(id => ({ id, companyId: options.parentCompanyId ?? f.companyId, name: `Project requester ${id}`, status: "active", adapterType: "paperclip_runner", adapterConfig: {}, runtimeConfig: {} })));
+    const parentId = randomUUID();
+    const parentCompanyId = options.parentCompanyId ?? f.companyId;
+    await server.db.insert(issues).values({
+      id: parentId,
+      companyId: parentCompanyId,
+      title: "Project requester task",
+      status: "todo",
+      assigneeAgentId: parentAssigneeAgentId,
+      responsibleUserId: options.parentResponsibleUserId === undefined ? f.responsibleUserId : options.parentResponsibleUserId,
+    });
+    await server.db.update(issues).set({
+      parentId,
+      createdByAgentId: creatorAgentId,
+      responsibleUserId: f.responsibleUserId,
+    }).where(eq(issues.id, f.issueId));
+    return { parentId, creatorAgentId, parentAssigneeAgentId };
+  }
+
+  async function projectHasAgent(projectId: string, agentId: string) {
+    return server.db.select().from(projectAccessMembers)
+      .where(eq(projectAccessMembers.projectId, projectId))
+      .then(rows => rows.some(row => row.subjectType === "agent" && row.subjectId === agentId));
+  }
 
   it("pages only visible projects and prefilters low-trust agent and run scopes", async () => {
     const f = await server.fixture({ disableWakeOnDemand: true });
@@ -357,6 +394,82 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(feed.filter(event => event.action === "project.created")).toHaveLength(1);
     expect(feed.find(event => event.action === "project.created")).toMatchObject({ entityId: project.id, runId: f.runId, details: { sourceIssueId: f.issueId } });
     await expect(call(f, "create_project", { ...input, name: "Changed" })).rejects.toThrow(/different inputs/);
+  });
+
+  it("grants a Delivery-created private project to its verified parent requester", async () => {
+    const f = await server.fixture({ conversation: true });
+    const requester = await configureProjectProvisioningParent(f);
+    vi.stubEnv("PAPERCLIP_PROJECT_PROVISIONING_AGENT_ID", f.agentId);
+
+    const project = await call(f, "create_project", {
+      name: "Private delivery handoff",
+      visibility: "private",
+      idempotencyKey: "private-parent-access",
+    }) as any;
+
+    expect(await projectHasAgent(project.id, requester.parentAssigneeAgentId)).toBe(true);
+    expect(await projectHasAgent(project.id, f.agentId)).toBe(true);
+  });
+
+  it.each([
+    ["creator differs from parent assignee", { creatorAgentId: randomUUID(), parentAssigneeAgentId: randomUUID() }, "configured", "private"],
+    ["responsible user differs", { parentResponsibleUserId: `other-${randomUUID()}` }, "configured", "private"],
+    ["parent is in another company", { parentCompanyId: "foreign" }, "configured", "private"],
+    ["provisioner is unconfigured", {}, "unset", "private"],
+    ["current agent is not configured provisioner", {}, "other", "private"],
+    ["project is not private", {}, "configured", "open"],
+  ] as const)("does not grant parent access when %s", async (_name, parentOptions, provisionerMode, visibility) => {
+    const f = await server.fixture({ conversation: true });
+    const parentCompanyOption = (parentOptions as { parentCompanyId?: string }).parentCompanyId;
+    const requester = await configureProjectProvisioningParent(f, {
+      ...parentOptions,
+      ...(parentCompanyOption === "foreign" ? { parentCompanyId: f.foreignCompanyId } : {}),
+    });
+    if (provisionerMode === "configured") vi.stubEnv("PAPERCLIP_PROJECT_PROVISIONING_AGENT_ID", f.agentId);
+    else if (provisionerMode === "other") vi.stubEnv("PAPERCLIP_PROJECT_PROVISIONING_AGENT_ID", randomUUID());
+    else vi.stubEnv("PAPERCLIP_PROJECT_PROVISIONING_AGENT_ID", "");
+
+    const project = await call(f, "create_project", {
+      name: `Denied parent access ${_name}`,
+      visibility,
+      idempotencyKey: `denied-parent-access-${_name}`,
+    }) as any;
+
+    expect(await projectHasAgent(project.id, requester.parentAssigneeAgentId)).toBe(false);
+  });
+
+  it("does not provision a project from a run no longer assigned to Delivery", async () => {
+    const f = await server.fixture({ conversation: true });
+    const requester = await configureProjectProvisioningParent(f);
+    const replacementAgentId = randomUUID();
+    await server.db.insert(agents).values({
+      id: replacementAgentId,
+      companyId: f.companyId,
+      name: "Replacement assignee",
+      status: "active",
+      adapterType: "paperclip_runner",
+      adapterConfig: {},
+      runtimeConfig: {},
+    });
+    await server.db.update(issues).set({
+      assigneeAgentId: replacementAgentId,
+      conversationAgentId: null,
+      conversationUserId: null,
+      conversationState: null,
+    }).where(eq(issues.id, f.issueId));
+    vi.stubEnv("PAPERCLIP_PROJECT_PROVISIONING_AGENT_ID", f.agentId);
+
+    await expect(call(f, "create_project", {
+      name: "Stale delivery run project",
+      visibility: "private",
+      idempotencyKey: "stale-delivery-run-project",
+    })).rejects.toThrow();
+
+    const companyProjects = await server.db.select().from(projects).where(eq(projects.companyId, f.companyId));
+    expect(companyProjects.some(project => project.name === "Stale delivery run project")).toBe(false);
+    for (const project of companyProjects) {
+      expect(await projectHasAgent(project.id, requester.parentAssigneeAgentId)).toBe(false);
+    }
   });
 
   it("includes an explicit workspace repository in the committed project card", async () => {

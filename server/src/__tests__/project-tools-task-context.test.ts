@@ -23,12 +23,14 @@ describe("project MCP task context tools", () => {
       ]));
     }
     for (const mode of ["standard", "skill_test"]) {
-      expect(projectToolDefinitions(mode, true).map(tool => tool.name)).toContain("update_task");
+      expect(projectToolDefinitions(mode, true).map(tool => tool.name)).toEqual(expect.arrayContaining(["update_task", "add_task_comment"]));
     }
     for (const mode of ["ask", "planning"]) {
       expect(projectToolDefinitions(mode, true).map(tool => tool.name)).not.toContain("update_task");
+      expect(projectToolDefinitions(mode, true).map(tool => tool.name)).not.toContain("add_task_comment");
     }
     expect(projectToolDefinitions("standard", false).map(tool => tool.name)).not.toContain("get_task");
+    expect(projectToolDefinitions("standard", false).map(tool => tool.name)).not.toContain("add_task_comment");
   });
 
   it("reads the bound task by default and returns only the task summary", async () => {
@@ -72,11 +74,28 @@ describe("project MCP task context tools", () => {
     })]);
   });
 
+  it("posts only the plain-text body through the authorized task comment route", async () => {
+    const receipt = { id: "comment-1", issueId: otherTaskId, body: "Source material attached", createdAt: "2026-11-17", privateMetadata: "not forwarded" };
+    const fetcher = vi.fn(async () => Response.json(receipt, { status: 201 }));
+    vi.stubGlobal("fetch", fetcher);
+    await expect(callProjectTool({
+      ...base, name: "add_task_comment", arguments: { taskId: otherTaskId, body: "  Source material attached  " },
+    })).resolves.toEqual({ id: "comment-1", issueId: otherTaskId, body: "Source material attached", createdAt: "2026-11-17" });
+    expect(fetcher.mock.calls[0]).toEqual([`https://paperclip.example/api/issues/${otherTaskId}/comments`, expect.objectContaining({
+      method: "POST",
+      headers: { Authorization: "Bearer run-token", "Content-Type": "application/json" },
+      body: JSON.stringify({ body: "Source material attached" }),
+    })]);
+  });
+
   it.each([
     { name: "update_task", arguments: {} },
     { name: "update_task", arguments: { status: "invalid" } },
     { name: "update_task", arguments: { projectId: "not-a-uuid" } },
     { name: "update_task", arguments: { status: "todo", assigneeAgentId: "agent-spoof" } },
+    { name: "add_task_comment", arguments: { body: "Hello", onBehalfOfUserId: "user-spoof" } },
+    { name: "add_task_comment", arguments: { body: "  " } },
+    { name: "add_task_comment", arguments: { body: "x".repeat(32_001) } },
     { name: "get_task", arguments: { taskId: otherTaskId, companyId: "other-company" } },
     { name: "get_task_comments", arguments: { taskId: "not-a-uuid" } },
     { name: "list_agents", arguments: { companyId: "other-company" } },
@@ -89,7 +108,7 @@ describe("project MCP task context tools", () => {
 
   it("surfaces normal API authorization and validation errors", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error: "Task access denied" }, { status: 403 })));
-    await expect(callProjectTool(base)).rejects.toThrow("Task access denied");
+    await expect(callProjectTool({ ...base, name: "add_task_comment", arguments: { body: "Unauthorized comment" } })).rejects.toThrow("Task access denied");
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error: "Invalid project" }, { status: 400 })));
     await expect(callProjectTool({ ...base, name: "update_task", arguments: { projectId: null } })).rejects.toThrow("Invalid project");
   });

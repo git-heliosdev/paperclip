@@ -961,6 +961,52 @@ describe("ssh env-lab fixture", () => {
     await expect(readFile(path.join(nestedRepo, "frontend.txt"), "utf8")).resolves.toBe("frontend remote dirty\n");
   }, SSH_FIXTURE_TEST_TIMEOUT_MS * 2);
 
+  it("keeps linked worktrees local during parent SSH workspace restore", async () => {
+    const rootDir = await createFixtureRootDir();
+    const localRepo = path.join(rootDir, "local-workspace");
+    await mkdir(localRepo);
+    await git(localRepo, ["init"]);
+    await git(localRepo, ["config", "user.name", "Paperclip Test"]);
+    await git(localRepo, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(localRepo, "tracked.txt"), "base\n");
+    await git(localRepo, ["add", "tracked.txt"]);
+    await git(localRepo, ["commit", "-m", "initial"]);
+    await writeFile(path.join(localRepo, "remove.txt"), "remote deletion\n");
+
+    const worktree = path.join(localRepo, ".paperclip", "worktrees", "child");
+    await git(localRepo, ["worktree", "add", "-b", "child", worktree]);
+    const nestedRepo = path.join(worktree, ".paperclip-repositories", "task-repo-fixture");
+    await mkdir(nestedRepo, { recursive: true });
+    await git(nestedRepo, ["init"]);
+    const worktreePointer = await readFile(path.join(worktree, ".git"), "utf8");
+    const nestedHead = await readFile(path.join(nestedRepo, ".git", "HEAD"), "utf8");
+
+    const started = await startSshEnvLabFixtureOrSkip(path.join(rootDir, "state.json"), "SSH linked worktrees test");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const prepared = await prepareRemoteManagedRuntime({
+      spec: { ...config, remoteCwd: started.workspaceDir },
+      runId: "parent-run",
+      adapterKey: "test-adapter",
+      workspaceLocalDir: localRepo,
+    });
+
+    await runSshCommand(config, [
+      `cd ${JSON.stringify(prepared.workspaceRemoteDir)}`,
+      "test ! -e .paperclip/worktrees",
+      "printf 'remote edit\\n' > tracked.txt",
+      "rm remove.txt",
+    ].join(" && "));
+    await writeFile(path.join(worktree, "concurrent.txt"), "child edit\n");
+    await prepared.restoreWorkspace();
+
+    await expect(readFile(path.join(worktree, ".git"), "utf8")).resolves.toBe(worktreePointer);
+    await expect(readFile(path.join(nestedRepo, ".git", "HEAD"), "utf8")).resolves.toBe(nestedHead);
+    await expect(readFile(path.join(worktree, "concurrent.txt"), "utf8")).resolves.toBe("child edit\n");
+    await expect(readFile(path.join(localRepo, "tracked.txt"), "utf8")).resolves.toBe("remote edit\n");
+    await expect(stat(path.join(localRepo, "remove.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS * 2);
+
   it("restores project repositories through the direct SSH restore path", async () => {
     const rootDir = await createFixtureRootDir();
     const statePath = path.join(rootDir, "state.json");

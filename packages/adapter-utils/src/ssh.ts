@@ -8,6 +8,7 @@ import { Transform } from "node:stream";
 import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
 import {
   createUnrelatedHistoryGraftCommit,
+  GIT_ARCHIVE_EXCLUDES,
   GIT_SYNC_COMMIT_IDENTITY_ARGS,
   PROJECT_REPOSITORIES_DIR,
   readSanitizedOriginRemoteUrl,
@@ -40,6 +41,16 @@ export interface SshCommandResult {
 export interface SshRemoteExecutionSpec extends SshConnectionConfig {
   remoteCwd: string;
 }
+
+// GNU tar's unanchored .git exclusion also matches nested checkouts. The local
+// snapshot needs the same exclusion. Managed worktrees are independent of a
+// parent checkout and must stay out of the parent run's archive and restore.
+export const SSH_GIT_WORKSPACE_EXCLUDES = [
+  ...GIT_ARCHIVE_EXCLUDES,
+  "*/.git",
+  ".paperclip-runtime",
+  ".paperclip/worktrees",
+];
 
 export function createSshCommandManagedRuntimeRunner(input: {
   spec: SshRemoteExecutionSpec;
@@ -1132,7 +1143,7 @@ async function transportGitWorkspaceToSsh(input: {
     spec: input.spec,
     localDir: input.localDir,
     remoteDir: input.remoteDir,
-    exclude: [".git", ".paperclip-runtime", ...(input.exclude ?? [])],
+    exclude: [...SSH_GIT_WORKSPACE_EXCLUDES, ...(input.exclude ?? [])],
     onProgress: input.onProgress,
     progressLabel: input.progressLabel,
   });

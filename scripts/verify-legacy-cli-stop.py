@@ -44,7 +44,8 @@ def main():
     cmd = ['docker', 'compose', '-p', 'paperclip']
     for p in manifest['compose_files']: cmd += ['-f', p]
     cmd += ['-f', str(root / 'candidate.override.json'), 'run', '--rm', '--no-deps', '-T', '--pull', 'never',
-        '--entrypoint', 'node', SERVICE, '/app/server/scripts/operator/verify-legacy-cli-stop.mjs']
+        '--entrypoint', 'node', SERVICE, '--import', '/app/server/node_modules/tsx/dist/loader.mjs',
+        '/app/server/scripts/operator/verify-legacy-cli-stop.mjs']
     result = json.loads(run(cmd, json.dumps(request)))
     if mode == 'record':
         path = root / 'legacy-stop-receipt.json'

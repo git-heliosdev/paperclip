@@ -90,7 +90,7 @@ export async function recordLegacyCliPreDispatchStop(db: Db, input: {
     const receipt = {
       schema: SCHEMA, companyId: run.companyId, issueId: issue.id, runId: run.id, agentId: run.agentId,
       finishedAt: run.finishedAt!.toISOString(), controllerBootId: run.controllerBootId,
-      factsDigest, factsSnapshot: facts, sourceObservation: input.observation, verifiedAt: new Date().toISOString(),
+      factsDigest, factsSnapshot: canonical(facts), sourceObservation: input.observation, verifiedAt: new Date().toISOString(),
       meaning: "no_provider_turn_dispatched", previousActionOutcomes: "not_certified",
     };
     await tx.update(issueRecoveryActions).set({ evidence: { ...action.evidence, legacyCliPreDispatchStop: receipt }, updatedAt: new Date() }).where(eq(issueRecoveryActions.id, action.id));

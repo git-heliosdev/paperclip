@@ -127,13 +127,13 @@ describePostgres("legacy no-provider-turn evidence collection", () => {
       requestedByActorType: "user", requestedByActorId: "operator", payload: { issueId: f.issueId,
         _paperclipWakeContext: { wakeCommentIds: [commentId] }, queuedCommentInterrupt: { actorId: "operator" } },
     }).returning();
-    const automatic = await db.transaction(tx => admitExplicitNativeContinuation(tx as unknown as typeof db,
-      { ...request, queuedCommentRequestId: queue!.id }));
+    const automatic = await db.transaction(tx => admitExplicitNativeContinuation({ db: tx as unknown as typeof db,
+      ...request, queuedCommentRequestId: queue!.id }));
     expect(automatic).toBeNull();
     const explicit = { ...request, queuedCommentInterruptId: queue!.id };
-    const first = await db.transaction(tx => admitExplicitNativeContinuation(tx as unknown as typeof db, explicit));
+    const first = await db.transaction(tx => admitExplicitNativeContinuation({ db: tx as unknown as typeof db, ...explicit }));
     expect(first).toMatchObject({ previousRunId: f.run.id, commentId });
-    const second = await db.transaction(tx => admitExplicitNativeContinuation(tx as unknown as typeof db, explicit));
+    const second = await db.transaction(tx => admitExplicitNativeContinuation({ db: tx as unknown as typeof db, ...explicit }));
     expect(second).toBeNull();
   });
 

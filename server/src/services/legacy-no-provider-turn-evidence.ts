@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, lte } from "drizzle-orm";
+import { and, asc, desc, eq, gte, lt, lte } from "drizzle-orm";
 import {
   activityLog,
   agentConfigRevisions,
@@ -62,16 +62,18 @@ export async function collectLegacyNoProviderTurnFacts(
   const issueCreated = issueActivity.some((entry) => entry.action === "issue.created" && entry.createdAt <= stored.createdAt);
   const overrideHistoryComplete = issueCreated && issueActivity.every((entry) => !hasKeyDeep(entry.details, "assigneeAdapterOverrides"));
 
-  const [effective] = await db.select().from(agentConfigRevisions).where(and(
+  const baseline = await db.select().from(agentConfigRevisions).where(and(
     eq(agentConfigRevisions.companyId, stored.companyId), eq(agentConfigRevisions.agentId, stored.agentId),
-    lte(agentConfigRevisions.createdAt, stored.createdAt),
-  )).orderBy(desc(agentConfigRevisions.createdAt)).limit(1);
+    lt(agentConfigRevisions.createdAt, stored.createdAt),
+  )).orderBy(desc(agentConfigRevisions.createdAt)).limit(2);
+  const effective = baseline[0];
+  const uniqueBaseline = baseline.length < 2 || baseline[0]!.createdAt.getTime() !== baseline[1]!.createdAt.getTime();
   const during = await db.select().from(agentConfigRevisions).where(and(
     eq(agentConfigRevisions.companyId, stored.companyId), eq(agentConfigRevisions.agentId, stored.agentId),
-    gt(agentConfigRevisions.createdAt, stored.createdAt),
+    gte(agentConfigRevisions.createdAt, stored.createdAt),
     lte(agentConfigRevisions.createdAt, collected.settledAt ?? stored.finishedAt!),
   )).orderBy(asc(agentConfigRevisions.createdAt));
-  const stable = Boolean(effective && cliConfig(effective.afterConfig) && during.every((revision) =>
+  const stable = Boolean(uniqueBaseline && effective && cliConfig(effective.afterConfig) && during.every((revision) =>
     cliConfig(revision.beforeConfig) && cliConfig(revision.afterConfig)));
   const routerSelectionPresent = executionFacts.run.routerSelectionPresent ||
     hasKeyDeep(issueActivity, "aiRouterSelection") ||

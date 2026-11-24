@@ -45,3 +45,9 @@ controller image changes, retain an immutable rollback and require a quiet
 execution window. Verify runtime/security settings and original input hashes
 after replacement, then let the same saved input continue through normal
 admission. Assignees retain task closure and downstream delivery ownership.
+
+The installed image uses user `node`. Its runtime bundle is root-owned. The
+overlay uses root only while it writes build artifacts, then restores `USER node`
+in the final image. Runtime user, capabilities, mounts and security settings
+must match the deployed baseline. The first attempt without the build user
+switch failed with EACCES while replacing the bundle; no live service changed.

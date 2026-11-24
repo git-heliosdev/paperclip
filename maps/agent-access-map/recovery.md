@@ -303,6 +303,15 @@ remaining operations before qualifying the whole capability.
 Gaps: Receiving the continuation is supported; impersonating a saved user message or
 retry control is not.
 
+Local stop-proof verification: `operator-only`; no domain HTTP/MCP endpoint.
+The [host verifier](../../scripts/verify-legacy-cli-stop.py) needs existing Docker
+operator access and an exact source scope. The
+[receipt service](../../server/src/services/legacy-local-stop-proof.ts) checks
+company/run/task bindings, the pinned source contract and complete durable facts.
+Agents cannot create that receipt or attest a missing process through a comment.
+It changes no grants or source task status. This local operator prerequisite is
+not proof of agent write access; normal saved-input admission remains separate.
+
 ## `reconnect`
 
 Review: `baseline`.
@@ -327,3 +336,4 @@ remaining operations before qualifying the whole capability.
 
 Gaps: Streaming reconnect needs its protocol client. Polling/read APIs remain available;
 replay is not proof of a fresh successful action.
+

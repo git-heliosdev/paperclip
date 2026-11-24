@@ -1,4 +1,3 @@
-"""Pin the existing controller rollout contract without printing environment values."""
 import hashlib, json, os, subprocess, sys
 from pathlib import Path
 

@@ -1,8 +1,3 @@
-"""Trusted-host wrapper: observe the existing controller, then invoke the one-shot verifier.
-
-No new key, socket mount, API route, provider command or published port is used.
-The candidate overlay and its source review are prepared before this is invoked.
-"""
 import json, os, subprocess, sys
 from datetime import datetime
 from pathlib import Path
@@ -20,7 +15,6 @@ CONTRACT = {
 def run(args, text=None):
     p = subprocess.run(args, input=text, capture_output=True, text=True)
     if p.returncode:
-        # Do not echo Compose output, which may contain expanded environment values.
         raise RuntimeError('operator_command_failed:' + args[0])
     return p.stdout
 

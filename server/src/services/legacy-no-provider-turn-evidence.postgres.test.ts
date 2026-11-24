@@ -3,13 +3,14 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog, agentConfigRevisions, agents, companies, createDb, heartbeatRunEvents,
-  heartbeatRuns, issues, issueRecoveryActions, issueComments,
+  heartbeatRuns, issues, issueRecoveryActions, issueComments, agentWakeupRequests,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { collectLegacyNoProviderTurnFacts } from "./legacy-no-provider-turn-evidence.js";
 import { hasLegacyCodexCliNoProviderTurnProof } from "./legacy-no-provider-turn-proof.js";
 import { LEGACY_CLI_SOURCE_IMAGE, LEGACY_CLI_SOURCE_CONTRACT, recordLegacyCliPreDispatchStop, hasLegacyLocalStopProof } from "./legacy-local-stop-proof.js";
 import { admitExplicitNativeContinuation } from "./explicit-native-continuation.js";
+import { getExecutionBlocker } from "./execution-blocker.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const describePostgres = support.supported ? describe : describe.skip;
@@ -49,7 +50,10 @@ describePostgres("legacy no-provider-turn evidence collection", () => {
       status: "cancelled", runtimeMode: "legacy", executionStage: "settled", startedAt: started, finishedAt: finished,
       createdAt: new Date(started.getTime() - 30_000),
       contextSnapshot: { issueId }, runnerProfileJson: { adapterDispatch: { adapterType: "codex_local" } },
-      resultJson: { cancellation: { source: "operator", expected: true }, cancelledByActorType: "user", cancelledByUserId: "operator" },
+      errorCode: "cancelled", error: "Cancelled by a board operator",
+      resultJson: { cancellation: { source: "operator", expected: true, initiator: { type: "user", id: "operator" },
+        reason: "Cancelled by a board operator", recordedAt: finished.toISOString() },
+        cancelledByActorType: "user", cancelledByUserId: "operator" },
       nextEventSeq: 3, lastOutputSeq: 0, logStore: "local_fs", logRef: "initialized-empty.log", logBytes: 0 }).returning();
     await db.insert(heartbeatRunEvents).values([
       { companyId, agentId, runId, seq: 1, eventType: "lifecycle", message: "task.run.started", payload: { phase: "task.run.started" }, createdAt: started },
@@ -117,9 +121,19 @@ describePostgres("legacy no-provider-turn evidence collection", () => {
       createdAt: new Date(finished.getTime() + 60_000) });
     const request = { companyId: f.companyId, issueId: f.issueId, agentId: f.agentId, commentId,
       actorType: "user", actorId: "operator", reason: "issue_commented", successorRunId: randomUUID() };
-    const first = await db.transaction(tx => admitExplicitNativeContinuation(tx as unknown as typeof db, request));
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ runId: f.run.id, recoveryActionId: f.action.id });
+    const [queue] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId,
+      source: "automation", reason: "issue_commented", status: "deferred_issue_execution",
+      requestedByActorType: "user", requestedByActorId: "operator", payload: { issueId: f.issueId,
+        _paperclipWakeContext: { wakeCommentIds: [commentId] }, queuedCommentInterrupt: { actorId: "operator" } },
+    }).returning();
+    const automatic = await db.transaction(tx => admitExplicitNativeContinuation(tx as unknown as typeof db,
+      { ...request, queuedCommentRequestId: queue!.id }));
+    expect(automatic).toBeNull();
+    const explicit = { ...request, queuedCommentInterruptId: queue!.id };
+    const first = await db.transaction(tx => admitExplicitNativeContinuation(tx as unknown as typeof db, explicit));
     expect(first).toMatchObject({ previousRunId: f.run.id, commentId });
-    const second = await db.transaction(tx => admitExplicitNativeContinuation(tx as unknown as typeof db, request));
+    const second = await db.transaction(tx => admitExplicitNativeContinuation(tx as unknown as typeof db, explicit));
     expect(second).toBeNull();
   });
 

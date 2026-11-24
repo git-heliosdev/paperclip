@@ -273,6 +273,16 @@ continuation and produces the requested answer. Repeat with a task/ancestor
 pause and a budget hold: recovery must not bypass the gate. For unknown external
 outcomes, inspect the provider before authorizing another operation.
 
+For a settled legacy Codex CLI run with no process identity, the local operator
+can use the [pinned-source verifier](../../doc/legacy-cli-stop-verification.md).
+It records a typed no-provider-turn proof after complete source/history checks.
+It does not certify earlier action outcomes or grant a retry. The
+[database regression](../../server/src/services/legacy-no-provider-turn-evidence.postgres.test.ts)
+checks receipt persistence and once-only admission; the ordinary new-input,
+workspace, lease, ownership, approval and budget gates still apply. ACP, missing
+history and dispatched turns remain held. This is an operator-only path, not an
+agent permission or a user instruction to certify infrastructure facts.
+
 ### `browser-reconnect`
 
 Automated: [live-update recovery](../../ui/src/context/LiveUpdatesProvider.recovery.test.tsx)
@@ -321,3 +331,4 @@ Scope: ui
 Storybook: Saved follow-up waiting on stop cleanup, pause/budget gate, one eligible continuation and result/failure.
 Production: Confirm previous execution stopped before delivery, preserve message, avoid duplicate wakes and honor actual task/ancestor/budget gate in separate legacy/native paths.
 Sources: Source: [TaskChatQueuedMessages.tsx](../../ui/src/components/task-chat/TaskChatQueuedMessages.tsx), [legacy-continuation.ts](../../server/src/services/recovery/legacy-continuation.ts), [native-restart-recovery.ts](../../server/src/services/native-runtime/native-restart-recovery.ts). Tests: [legacy-continuation.test.ts](../../server/src/services/recovery/legacy-continuation.test.ts), [native-restart-recovery.test.ts](../../server/src/services/native-runtime/native-restart-recovery.test.ts), [issue-queued-comments-routes.test.ts](../../server/src/__tests__/issue-queued-comments-routes.test.ts), [legacy-failure-continuation.spec.ts](../../tests/e2e/legacy-failure-continuation.spec.ts)
+

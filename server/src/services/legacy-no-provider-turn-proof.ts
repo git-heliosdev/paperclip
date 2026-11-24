@@ -1,11 +1,4 @@
-/**
- * A narrow proof for a cancelled legacy Codex CLI run whose remote SSH
- * transport reports no process identity. This says only that the provider
- * turn was never launched; it does not attest an action outcome.
- *
- * The caller must build these facts from immutable run/config history and
- * server-owned event rows. Missing or ambiguous history must map to false.
- */
+
 export type LegacyNoProviderTurnProofFacts = {
   binding: { companyId: string; runId: string; agentId: string; issueId: string };
   run: {
@@ -25,7 +18,7 @@ export type LegacyNoProviderTurnProofFacts = {
     routerSelectionPresent: boolean;
     controllerLeaseExpired: boolean;
   };
-  /** Effective values reconstructed from config revisions at run start. */
+  
   effectiveConfig: {
     adapterType: string | null;
     engine: string | null;
@@ -33,10 +26,10 @@ export type LegacyNoProviderTurnProofFacts = {
     agentConfigStable: boolean;
     issueAdapterOverridesAbsent: boolean;
     issueOverrideHistoryComplete: boolean;
-    /** Historical runs must be tied to the source version whose ordering is proven. */
+    
     sourceSemanticsProven: boolean;
   };
-  /** Event inventory for this exact company/run, from server-owned rows. */
+  
   eventInventoryComplete: boolean;
   durableSettlement: boolean;
   events: Array<{ eventType: string; seq: number; durableSettlement: boolean }>;
@@ -47,11 +40,7 @@ export type LegacyNoProviderTurnProofFacts = {
 
 const LIFECYCLE_EVENT = "lifecycle";
 
-/**
- * Returns true only when durable source facts show that the Codex CLI turn
- * boundary was never crossed. Codex ACP is excluded because its session may
- * start before it emits adapter.invoke metadata.
- */
+
 export function hasLegacyCodexCliNoProviderTurnProof(
   facts: LegacyNoProviderTurnProofFacts,
 ): boolean {

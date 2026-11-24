@@ -10,6 +10,7 @@ import {
   type Db,
 } from "@paperclipai/db";
 import type { LegacyNoProviderTurnProofFacts } from "./legacy-no-provider-turn-proof.js";
+import { readRunCancellation } from "./run-cancellation.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 type Json = Record<string, unknown>;
@@ -32,18 +33,14 @@ function cliConfig(config: unknown): boolean {
 
 function hasOutputMetadata(run: Run): boolean {
   const result = record(run.resultJson);
-  return run.lastOutputAt !== null || run.lastOutputSeq !== 0 || run.lastOutputStream !== null ||
+  return Boolean(run.stdoutExcerpt || run.stderrExcerpt) || run.lastOutputAt !== null || run.lastOutputSeq !== 0 || run.lastOutputStream !== null ||
     run.lastOutputBytes !== null && run.lastOutputBytes !== 0 ||
     run.logBytes !== null && run.logBytes !== 0 || run.logSha256 !== null ||
     ["stdout", "stderr", "stdoutExcerpt", "stderrExcerpt", "output", "logBytes", "logSha256"]
       .some((key) => result?.[key] !== null && result?.[key] !== undefined && result?.[key] !== "" && result?.[key] !== 0);
 }
 
-/**
- * Collects immutable and current DB facts for one exact run. `sourceSemanticsProven`
- * must only be true after the operator's pinned-source verification receipt has
- * been validated by the caller. This function never writes or infers that receipt.
- */
+
 export async function collectLegacyNoProviderTurnFacts(
   db: Db,
   run: Run,
@@ -54,8 +51,6 @@ export async function collectLegacyNoProviderTurnFacts(
     eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.agentId, run.agentId),
   )).limit(1);
   if (!stored || !stored.startedAt || !stored.finishedAt || stored.finishedAt < stored.startedAt) return null;
-  // A pre-dispatch proof is small. Reject a large/ambiguous history before
-  // loading it on a shared admission path. Never truncate an event inventory.
   if (!Number.isSafeInteger(stored.nextEventSeq) || stored.nextEventSeq < 2 || stored.nextEventSeq > 64) return null;
 
   const contextIssueId = record(stored.contextSnapshot)?.issueId;
@@ -109,7 +104,7 @@ export async function collectLegacyNoProviderTurnFacts(
   )).limit(1);
 
   const result = record(stored.resultJson);
-  const cancellation = record(result?.cancellation);
+  const cancellation = readRunCancellation(stored.resultJson);
   const dispatch = record(record(stored.runnerProfileJson)?.adapterDispatch);
   const routerSelectionPresent = hasKeyDeep(stored.contextSnapshot, "aiRouterSelection") ||
     hasKeyDeep(stored.runnerProfileJson, "aiRouterSelection") || hasKeyDeep(issueActivity, "aiRouterSelection") ||
@@ -128,7 +123,8 @@ export async function collectLegacyNoProviderTurnFacts(
       sessionIdAfter: stored.sessionIdAfter,
       cancellationSource: cancellation?.source === "operator" ? "operator" : null,
       cancellationExpected: cancellation?.expected === true,
-      cancelledByActorType: result?.cancelledByActorType === "user" && typeof result.cancelledByUserId === "string" ? "user" : null,
+      cancelledByActorType: result?.cancelledByActorType === "user" && typeof result.cancelledByUserId === "string" &&
+        cancellation?.initiator.type === "user" && cancellation.initiator.id === result.cancelledByUserId ? "user" : null,
       adapterType: dispatch?.adapterType === "codex_local" ? "codex_local" : null,
       routerSelectionPresent,
       controllerLeaseExpired: stored.controllerLeaseExpiresAt === null || stored.controllerLeaseExpiresAt <= now,

@@ -9,8 +9,6 @@ import { hasLegacyCodexCliNoProviderTurnProof } from "./legacy-no-provider-turn-
 
 type Run = typeof heartbeatRuns.$inferSelect;
 const SCHEMA = "paperclip.legacy-cli-pre-dispatch-stop.v1";
-// This historical contract was independently reviewed in the deployed image.
-// A new source contract needs its own review; unknown images cannot be attested.
 export const LEGACY_CLI_SOURCE_IMAGE = "sha256:165ef7671ee5bde31ad28140b6fd45cd70594da48e10b9cb363c1fe8c4098472";
 export const LEGACY_CLI_SOURCE_CONTRACT = {
   "packages/adapters/codex-local/src/server/execute.ts": "581f1384f4c10501d01f2cbdcb866686eec1283c",
@@ -26,8 +24,7 @@ function digest(v: unknown): string {
   return createHash("sha256").update(JSON.stringify(v)).digest("hex");
 }
 
-/** Only the existing trusted host operator CLI supplies this observation.
- * There is deliberately no HTTP, agent, or MCP mutation endpoint for it. */
+
 export type LegacyCliSourceObservation = {
   imageId: string;
   containerId: string;
@@ -59,9 +56,7 @@ function validObservation(observation: LegacyCliSourceObservation, run: Run): bo
       .every(([path, hash]) => blobs[path] === hash);
 }
 
-/** Classify durable facts, then retain the proof on its existing source-scoped
- * recovery action. It changes no task status, action outcome, acknowledgement,
- * permission, provider session, or saved user message. */
+
 export async function recordLegacyCliPreDispatchStop(db: Db, input: {
   runId: string;
   companyId: string;
@@ -100,8 +95,7 @@ export async function recordLegacyCliPreDispatchStop(db: Db, input: {
   });
 }
 
-/** Existing legacy acknowledgement, or a typed verified no-dispatch proof.
- * Callers retain their process, coordinator, lease and new-input fences. */
+
 export async function hasLegacyLocalStopProof(db: Db, run: Run): Promise<boolean> {
   if (run.runtimeMode !== "legacy" || run.status !== "cancelled") return false;
   if (object(run.resultJson?.executionCancellation).state === "acknowledged") return true;

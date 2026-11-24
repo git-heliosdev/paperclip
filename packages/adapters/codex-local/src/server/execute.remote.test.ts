@@ -110,7 +110,6 @@ describe("codex remote execution", () => {
       onLog: async () => {}, onMeta,
     }).catch(error => { expect(String(error)).toContain("metadata persistence failed"); });
     expect(onMeta).toHaveBeenCalledTimes(1);
-    // A version qualification preflight is separate from the provider turn.
     expect(runChildProcess.mock.calls.some(call => (call as unknown[])[0] === runId)).toBe(false);
   });
 

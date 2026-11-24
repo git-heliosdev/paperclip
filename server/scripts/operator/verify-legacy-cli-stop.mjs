@@ -1,4 +1,3 @@
-// Operator-only one-shot entry point. It starts no server or provider process.
 import { createDb, heartbeatRuns } from '@paperclipai/db';
 import { and, eq } from 'drizzle-orm';
 import { createHash } from 'node:crypto';

@@ -5,6 +5,7 @@ import { environmentLeases, heartbeatRuns, nativeRunFinalizations, type Db } fro
 import { hasNativeLocalProcessStop } from "./native-local-process-stop.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { isCancelledNativeStartup } from "./cancelled-native-startup.js";
+import { hasLegacyLocalStopProof } from "./legacy-local-stop-proof.js";
 
 /** Cancellation changes admission. Process and lease evidence controls cleanup. */
 export async function agentExecutionsHaveStopped(db: Db, agentIds: string[]) {
@@ -55,7 +56,7 @@ export async function agentExecutionsHaveStopped(db: Db, agentIds: string[]) {
         !await hasNativeLocalProcessStop(db, run.companyId, run.id) &&
         !await isCancelledNativeStartup(db, run, coordinators.find(row => row.runId === run.id))) return false;
     if (run.runtimeMode === "legacy" && !run.processPid && !run.processGroupId &&
-        (run.resultJson?.executionCancellation as Record<string, unknown> | undefined)?.state !== "acknowledged" &&
+        !await hasLegacyLocalStopProof(db, run) &&
         !(run.executionStage === "settled" && !await runUsedConversationAdapter(db, run)) &&
         !await isCancelledNativeStartup(db, run, coordinators.find(row => row.runId === run.id))) return false;
   }
@@ -72,3 +73,4 @@ export async function agentExecutionsHaveStopped(db: Db, agentIds: string[]) {
   }
   return true;
 }
+

@@ -88,6 +88,32 @@ describe("codex remote execution", () => {
     }
   });
 
+  it("does not dispatch a CLI provider turn if durable metadata persistence fails", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-cli-dispatch-boundary-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const codexHomeDir = path.join(rootDir, "codex-home");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(codexHomeDir, { recursive: true });
+    await writeFile(path.join(codexHomeDir, "auth.json"), "{}", "utf8");
+    const runId = "run-no-dispatch-without-meta";
+    const onMeta = vi.fn(async () => { throw new Error("metadata persistence failed"); });
+    await execute({
+      runId,
+      agent: { id: "agent-1", companyId: "company-1", name: "Codex", adapterType: "codex_local", adapterConfig: {} },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { engine: "cli", command: "codex", env: { CODEX_HOME: codexHomeDir } },
+      context: { paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" } },
+      executionTransport: { remoteExecution: { host: "127.0.0.1", port: 2222, username: "fixture",
+        remoteWorkspacePath: "/remote/workspace", remoteCwd: "/remote/workspace",
+        privateKey: "FIXTURE KEY", knownHosts: "[127.0.0.1]:2222 ssh-ed25519 FIXTURE", strictHostKeyChecking: true } },
+      onLog: async () => {}, onMeta,
+    }).catch(error => { expect(String(error)).toContain("metadata persistence failed"); });
+    expect(onMeta).toHaveBeenCalledTimes(1);
+    // A version qualification preflight is separate from the provider turn.
+    expect(runChildProcess.mock.calls.some(call => (call as unknown[])[0] === runId)).toBe(false);
+  });
+
   it("prepares the workspace, syncs CODEX_HOME, and restores workspace changes for remote SSH execution", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-remote-"));
     cleanupDirs.push(rootDir);
@@ -696,3 +722,4 @@ describe("codex remote execution", () => {
   });
 
 });
+

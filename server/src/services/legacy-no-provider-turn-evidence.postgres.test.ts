@@ -104,6 +104,18 @@ describePostgres("legacy no-provider-turn evidence collection", () => {
     expect(hasLegacyCodexCliNoProviderTurnProof(facts!)).toBe(false);
   });
 
+  it.each(["baseline_tie", "creation_boundary"])("rejects ambiguous historical configuration at %s", async kind => {
+    const f = await seed();
+    const acp = { ...config, adapterConfig: { ...config.adapterConfig, engine: "acp" } };
+    await db.insert(agentConfigRevisions).values({ companyId: f.companyId, agentId: f.agentId, source: "patch",
+      changedKeys: ["adapterConfig"], beforeConfig: kind === "baseline_tie" ? config : acp,
+      afterConfig: kind === "baseline_tie" ? acp : config,
+      createdAt: kind === "baseline_tie" ? new Date(started.getTime() - 120_000) : f.run.createdAt });
+    const facts = await collectLegacyNoProviderTurnFacts(db, f.run, true);
+    expect(facts?.effectiveConfig.agentConfigStable).toBe(false);
+    expect(hasLegacyCodexCliNoProviderTurnProof(facts!)).toBe(false);
+  });
+
   async function recoveryFixture() {
     const f = await seed();
     const [action] = await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId,

@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog, agentConfigRevisions, agents, companies, createDb, heartbeatRunEvents,
-  heartbeatRuns, issues, issueRecoveryActions, issueComments, agentWakeupRequests,
+  heartbeatRuns, issues, issueRecoveryActions, issueComments, agentWakeupRequests, environmentLeases,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { collectLegacyNoProviderTurnFacts } from "./legacy-no-provider-turn-evidence.js";
@@ -11,6 +11,7 @@ import { hasLegacyCodexCliNoProviderTurnProof } from "./legacy-no-provider-turn-
 import { LEGACY_CLI_SOURCE_IMAGE, LEGACY_CLI_SOURCE_CONTRACT, recordLegacyCliPreDispatchStop, hasLegacyLocalStopProof } from "./legacy-local-stop-proof.js";
 import { admitExplicitNativeContinuation } from "./explicit-native-continuation.js";
 import { getExecutionBlocker } from "./execution-blocker.js";
+import { agentExecutionsHaveStopped } from "./agent-execution-stop.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const describePostgres = support.supported ? describe : describe.skip;
@@ -90,6 +91,19 @@ describePostgres("legacy no-provider-turn evidence collection", () => {
     expect(overrideFacts).toBeNull();
   });
 
+  it("checks the CLI configuration through executor settlement after cancellation", async () => {
+    const f = await seed();
+    await db.update(heartbeatRunEvents).set({ createdAt: new Date(finished.getTime() + 120_000) }).where(and(
+      eq(heartbeatRunEvents.runId, f.run.id), eq(heartbeatRunEvents.message, "task.run.measured")));
+    await db.insert(agentConfigRevisions).values({ companyId: f.companyId, agentId: f.agentId, source: "patch",
+      changedKeys: ["adapterConfig"], beforeConfig: config,
+      afterConfig: { ...config, adapterConfig: { ...config.adapterConfig, engine: "acp" } },
+      createdAt: new Date(finished.getTime() + 60_000) });
+    const facts = await collectLegacyNoProviderTurnFacts(db, f.run, true);
+    expect(facts?.effectiveConfig.agentConfigStable).toBe(false);
+    expect(hasLegacyCodexCliNoProviderTurnProof(facts!)).toBe(false);
+  });
+
   async function recoveryFixture() {
     const f = await seed();
     const [action] = await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId,
@@ -137,6 +151,13 @@ describePostgres("legacy no-provider-turn evidence collection", () => {
     expect(second).toBeNull();
   });
 
+  it("rechecks the controller identity even when the caller holds an old run snapshot", async () => {
+    const f = await recoveryFixture();
+    await recordLegacyCliPreDispatchStop(db, f.input);
+    await db.update(heartbeatRuns).set({ controllerBootId: randomUUID() }).where(eq(heartbeatRuns.id, f.run.id));
+    expect(await hasLegacyLocalStopProof(db, f.run)).toBe(false);
+  });
+
   it("rejects malformed source observations and invalidates a proof if invocation evidence appears", async () => {
     const f = await recoveryFixture();
     await expect(recordLegacyCliPreDispatchStop(db, { ...f.input, observation: { ...f.input.observation,
@@ -148,5 +169,48 @@ describePostgres("legacy no-provider-turn evidence collection", () => {
     await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, agentId: f.agentId, runId: f.run.id,
       seq: 3, eventType: "adapter.invoke", payload: { adapterType: "codex_local" } });
     expect(await hasLegacyLocalStopProof(db, f.run)).toBe(false);
+  });
+
+  it("keeps a verified stop after later reassignment while denying the old assignee's new continuation", async () => {
+    const f = await recoveryFixture();
+    await recordLegacyCliPreDispatchStop(db, f.input);
+    expect(await hasLegacyLocalStopProof(db, f.run)).toBe(true);
+
+    const nextAgentId = randomUUID();
+    await db.insert(agents).values({ id: nextAgentId, companyId: f.companyId, name: "Next owner", role: "engineer",
+      status: "idle", adapterType: "codex_local", adapterConfig: config.adapterConfig, runtimeConfig: {} });
+    const futureOverride = { adapterConfig: { command: "another-command" } };
+    await db.update(issues).set({ assigneeAgentId: nextAgentId, assigneeAdapterOverrides: futureOverride,
+      updatedAt: new Date(finished.getTime() + 120_000) }).where(eq(issues.id, f.issueId));
+    await db.insert(activityLog).values({ companyId: f.companyId, actorType: "user", actorId: "operator",
+      action: "issue.updated", entityType: "issue", entityId: f.issueId,
+      details: { changes: { assigneeAgentId: nextAgentId, assigneeAdapterOverrides: futureOverride } },
+      createdAt: new Date(finished.getTime() + 120_000) });
+
+    expect(await hasLegacyLocalStopProof(db, f.run)).toBe(true);
+    const followUpId = randomUUID();
+    await db.insert(issueComments).values({ id: followUpId, companyId: f.companyId, issueId: f.issueId,
+      authorType: "user", authorUserId: "operator", body: "Continue under the current task owner.",
+      createdAt: new Date(finished.getTime() + 180_000) });
+    const runsBefore = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId));
+    expect(await agentExecutionsHaveStopped(db, [f.agentId])).toBe(true);
+    const commentsBefore = await db.select().from(issueComments).where(eq(issueComments.companyId, f.companyId));
+    const denied = await db.transaction(tx => admitExplicitNativeContinuation({
+      db: tx as unknown as typeof db, companyId: f.companyId, issueId: f.issueId, agentId: f.agentId,
+      actorType: "user", actorId: "operator", reason: "issue_commented", commentId: followUpId, successorRunId: randomUUID(),
+    }));
+    expect(denied).toBeNull();
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(runsBefore.length);
+    expect(await db.select().from(issueComments).where(eq(issueComments.companyId, f.companyId))).toHaveLength(commentsBefore.length);
+  });
+
+  it("invalidates a historical stop proof when a run-bound lease appears later", async () => {
+    const f = await recoveryFixture();
+    await recordLegacyCliPreDispatchStop(db, f.input);
+    expect(await hasLegacyLocalStopProof(db, f.run)).toBe(true);
+    await db.insert(environmentLeases).values({ companyId: f.companyId, issueId: f.issueId,
+      heartbeatRunId: f.run.id, status: "active" });
+    expect(await hasLegacyLocalStopProof(db, f.run)).toBe(false);
+    expect(await agentExecutionsHaveStopped(db, [f.agentId])).toBe(false);
   });
 });

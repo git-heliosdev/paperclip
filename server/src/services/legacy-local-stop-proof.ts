@@ -4,8 +4,8 @@ import { join } from "node:path";
 import { and, eq } from "drizzle-orm";
 import { heartbeatRuns, issueRecoveryActions, issues, type Db } from "@paperclipai/db";
 import { persistActivity } from "./activity-log.js";
-import { collectLegacyNoProviderTurnFacts } from "./legacy-no-provider-turn-evidence.js";
-import { hasLegacyCodexCliNoProviderTurnProof } from "./legacy-no-provider-turn-proof.js";
+import { collectLegacyNoProviderTurnFacts, collectLegacyNoProviderTurnExecutionFacts } from "./legacy-no-provider-turn-evidence.js";
+import { hasLegacyCodexCliNoProviderTurnProof, type LegacyNoProviderTurnProofFacts } from "./legacy-no-provider-turn-proof.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 const SCHEMA = "paperclip.legacy-cli-pre-dispatch-stop.v1";
@@ -20,9 +20,16 @@ export const LEGACY_CLI_SOURCE_CONTRACT = {
 function object(v: unknown): Record<string, unknown> {
   return v && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : {};
 }
-function digest(v: unknown): string {
-  return createHash("sha256").update(JSON.stringify(v)).digest("hex");
+function canonical(v: unknown): unknown {
+  if (v instanceof Date) return v.toISOString();
+  if (Array.isArray(v)) return v.map(canonical);
+  if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([k, value]) => [k, canonical(value)]));
+  return v;
 }
+function digest(v: unknown): string {
+  return createHash("sha256").update(JSON.stringify(canonical(v))).digest("hex");
+}
+export { digest as legacyCliStopFactsDigest };
 
 
 export type LegacyCliSourceObservation = {
@@ -78,12 +85,12 @@ export async function recordLegacyCliPreDispatchStop(db: Db, input: {
     if (!facts || !hasLegacyCodexCliNoProviderTurnProof(facts)) throw new Error("legacy_cli_no_dispatch_not_proven");
     const factsDigest = digest(facts);
     const previous = object(action.evidence.legacyCliPreDispatchStop);
-    if (previous.schema === SCHEMA && previous.factsDigest === factsDigest) return previous;
+    if (previous.schema === SCHEMA && previous.factsDigest === factsDigest && digest(previous.factsSnapshot) === factsDigest) return previous;
     if (Object.keys(previous).length) throw new Error("legacy_cli_stop_receipt_conflict");
     const receipt = {
       schema: SCHEMA, companyId: run.companyId, issueId: issue.id, runId: run.id, agentId: run.agentId,
       finishedAt: run.finishedAt!.toISOString(), controllerBootId: run.controllerBootId,
-      factsDigest, sourceObservation: input.observation, verifiedAt: new Date().toISOString(),
+      factsDigest, factsSnapshot: facts, sourceObservation: input.observation, verifiedAt: new Date().toISOString(),
       meaning: "no_provider_turn_dispatched", previousActionOutcomes: "not_certified",
     };
     await tx.update(issueRecoveryActions).set({ evidence: { ...action.evidence, legacyCliPreDispatchStop: receipt }, updatedAt: new Date() }).where(eq(issueRecoveryActions.id, action.id));
@@ -110,8 +117,12 @@ export async function hasLegacyLocalStopProof(db: Db, run: Run): Promise<boolean
         receipt.finishedAt !== run.finishedAt.toISOString() || receipt.controllerBootId !== run.controllerBootId ||
         receipt.meaning !== "no_provider_turn_dispatched" ||
         !validObservation(object(receipt.sourceObservation) as LegacyCliSourceObservation, run)) continue;
-    const facts = await collectLegacyNoProviderTurnFacts(db, run, true);
-    if (facts && hasLegacyCodexCliNoProviderTurnProof(facts) && digest(facts) === receipt.factsDigest) return true;
+    const snapshot = object(receipt.factsSnapshot);
+    if (digest(snapshot) !== receipt.factsDigest) continue;
+    const execution = await collectLegacyNoProviderTurnExecutionFacts(db, run);
+    if (!execution) continue;
+    const facts = { ...execution, effectiveConfig: object(snapshot.effectiveConfig) } as LegacyNoProviderTurnProofFacts;
+    if (hasLegacyCodexCliNoProviderTurnProof(facts) && digest(facts) === receipt.factsDigest) return true;
   }
   return false;
 }

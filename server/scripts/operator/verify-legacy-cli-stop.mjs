@@ -1,7 +1,6 @@
 import { createDb, heartbeatRuns } from '@paperclipai/db';
 import { and, eq } from 'drizzle-orm';
-import { createHash } from 'node:crypto';
-import { verifyLegacyCliSourceContract, recordLegacyCliPreDispatchStop } from '../../dist/services/legacy-local-stop-proof.js';
+import { verifyLegacyCliSourceContract, recordLegacyCliPreDispatchStop, legacyCliStopFactsDigest } from '../../dist/services/legacy-local-stop-proof.js';
 import { collectLegacyNoProviderTurnFacts } from '../../dist/services/legacy-no-provider-turn-evidence.js';
 import { hasLegacyCodexCliNoProviderTurnProof } from '../../dist/services/legacy-no-provider-turn-proof.js';
 
@@ -23,7 +22,7 @@ try {
     if (!run) throw new Error('source_run_not_found');
     const facts = await collectLegacyNoProviderTurnFacts(db, run, true);
     console.log(JSON.stringify({ mode: 'inspect', runId: run.id, eligible: facts !== null && hasLegacyCodexCliNoProviderTurnProof(facts),
-      factsDigest: createHash('sha256').update(JSON.stringify(facts)).digest('hex'), facts }));
+      factsDigest: legacyCliStopFactsDigest(facts), facts }));
   } else {
     console.log(JSON.stringify({ mode: 'record', receipt: await recordLegacyCliPreDispatchStop(db, request) }));
   }

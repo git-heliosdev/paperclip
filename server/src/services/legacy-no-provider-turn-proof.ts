@@ -1,6 +1,6 @@
 
 export type LegacyNoProviderTurnProofFacts = {
-  binding: { companyId: string; runId: string; agentId: string; issueId: string };
+  binding: { companyId: string; runId: string; agentId: string; issueId: string; controllerBootId: string | null };
   run: {
     runtimeMode: string | null;
     status: string;

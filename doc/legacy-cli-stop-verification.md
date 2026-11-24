@@ -21,8 +21,13 @@ checks those source files and the database facts before retaining a typed proof
 on the existing source-scoped recovery action. That write preserves task status,
 recovery outcome, saved inputs and unknown action outcomes.
 
+The receipt keeps a canonical, key-sorted snapshot of the verified historical
+configuration and task-override facts. Configuration must stay in the CLI lane
+through durable executor settlement, including cleanup after cancellation.
 The two stop gates consume the typed proof only if its source binding and fresh
-fact digest still match. The existing legacy acknowledged-stop proof is shared;
+execution-fact digest still match. Later task assignment or model settings do not
+erase an old stop proof. Current ownership still governs new admission.
+The existing legacy acknowledged-stop proof is shared;
 native process proofs, live PID/group checks, remote cleanup receipts,
 coordinator ownership, task ownership, approvals, workspace recovery, and
 explicit new-input authorization remain in place.

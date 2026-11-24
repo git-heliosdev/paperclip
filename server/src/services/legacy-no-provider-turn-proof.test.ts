@@ -6,7 +6,7 @@ import {
 
 function validFacts(): LegacyNoProviderTurnProofFacts {
   return {
-    binding: { companyId: "company", runId: "run", agentId: "agent", issueId: "issue" },
+    binding: { companyId: "company", runId: "run", agentId: "agent", issueId: "issue", controllerBootId: null },
     run: {
       runtimeMode: "legacy",
       status: "cancelled",

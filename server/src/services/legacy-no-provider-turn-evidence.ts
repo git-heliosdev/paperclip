@@ -47,22 +47,14 @@ export async function collectLegacyNoProviderTurnFacts(
   sourceSemanticsProven = false,
   now = new Date(),
 ): Promise<LegacyNoProviderTurnProofFacts | null> {
-  const [stored] = await db.select().from(heartbeatRuns).where(and(
-    eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.agentId, run.agentId),
-  )).limit(1);
-  if (!stored || !stored.startedAt || !stored.finishedAt || stored.finishedAt < stored.startedAt) return null;
-  if (!Number.isSafeInteger(stored.nextEventSeq) || stored.nextEventSeq < 2 || stored.nextEventSeq > 64) return null;
-
-  const contextIssueId = record(stored.contextSnapshot)?.issueId;
-  const issueIds = [stored.nativeIssueId, stored.issueId, typeof contextIssueId === "string" ? contextIssueId : null]
-    .filter((value): value is string => typeof value === "string");
-  if (issueIds.some((id) => id !== issueIds[0])) return null;
-  const issueId = issueIds[0] ?? null;
-  if (!issueId) return null;
+  const collected = await collectExecutionFactsAndRun(db, run, now);
+  if (!collected) return null;
+  const { stored, facts: executionFacts } = collected;
+  const issueId = executionFacts.binding.issueId;
   const [issue] = await db.select().from(issues).where(and(
     eq(issues.companyId, stored.companyId), eq(issues.id, issueId), eq(issues.assigneeAgentId, stored.agentId),
   )).limit(1);
-  if (!issue || issue.createdAt > stored.startedAt || issue.assigneeAdapterOverrides !== null) return null;
+  if (!issue || issue.createdAt > stored.startedAt! || issue.assigneeAdapterOverrides !== null) return null;
 
   const issueActivity = await db.select({ action: activityLog.action, details: activityLog.details, createdAt: activityLog.createdAt })
     .from(activityLog).where(and(eq(activityLog.companyId, stored.companyId), eq(activityLog.entityType, "issue"),
@@ -77,19 +69,56 @@ export async function collectLegacyNoProviderTurnFacts(
   const during = await db.select().from(agentConfigRevisions).where(and(
     eq(agentConfigRevisions.companyId, stored.companyId), eq(agentConfigRevisions.agentId, stored.agentId),
     gt(agentConfigRevisions.createdAt, stored.createdAt),
-    lte(agentConfigRevisions.createdAt, stored.finishedAt),
+    lte(agentConfigRevisions.createdAt, collected.settledAt ?? stored.finishedAt!),
   )).orderBy(asc(agentConfigRevisions.createdAt));
-  const revisions = effective ? [effective, ...during] : during;
   const stable = Boolean(effective && cliConfig(effective.afterConfig) && during.every((revision) =>
     cliConfig(revision.beforeConfig) && cliConfig(revision.afterConfig)));
+  const routerSelectionPresent = executionFacts.run.routerSelectionPresent ||
+    hasKeyDeep(issueActivity, "aiRouterSelection") ||
+    Boolean(effective && hasKeyDeep(effective.afterConfig, "aiRouterSelection")) ||
+    during.some((revision) => hasKeyDeep(revision.beforeConfig, "aiRouterSelection") || hasKeyDeep(revision.afterConfig, "aiRouterSelection"));
 
+  return {
+    ...executionFacts,
+    run: { ...executionFacts.run, routerSelectionPresent },
+    effectiveConfig: {
+      adapterType: effective && cliConfig(effective.afterConfig) ? "codex_local" : null,
+      engine: effective && cliConfig(effective.afterConfig) ? "cli" : null,
+      command: effective && cliConfig(effective.afterConfig) ? "codex" : null,
+      agentConfigStable: stable,
+      issueAdapterOverridesAbsent: issue.assigneeAdapterOverrides === null,
+      issueOverrideHistoryComplete: overrideHistoryComplete,
+      sourceSemanticsProven,
+    },
+  };
+}
+
+type ExecutionFacts = Omit<LegacyNoProviderTurnProofFacts, "effectiveConfig">;
+
+async function collectExecutionFactsAndRun(
+  db: Db,
+  run: Run,
+  now: Date,
+): Promise<{ stored: Run; facts: ExecutionFacts; settledAt: Date | null } | null> {
+  const [stored] = await db.select().from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.agentId, run.agentId),
+  )).limit(1);
+  if (!stored || !stored.startedAt || !stored.finishedAt || stored.finishedAt < stored.startedAt) return null;
+  if (!Number.isSafeInteger(stored.nextEventSeq) || stored.nextEventSeq < 2 || stored.nextEventSeq > 64) return null;
+
+  const contextIssueId = record(stored.contextSnapshot)?.issueId;
+  const issueIds = [stored.nativeIssueId, stored.issueId, typeof contextIssueId === "string" ? contextIssueId : null]
+    .filter((value): value is string => typeof value === "string");
+  if (issueIds.some((id) => id !== issueIds[0])) return null;
+  const issueId = issueIds[0] ?? null;
+  if (!issueId) return null;
   const events = await db.select({ agentId: heartbeatRunEvents.agentId, seq: heartbeatRunEvents.seq, eventType: heartbeatRunEvents.eventType,
     message: heartbeatRunEvents.message, payload: heartbeatRunEvents.payload, createdAt: heartbeatRunEvents.createdAt })
     .from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.companyId, stored.companyId), eq(heartbeatRunEvents.runId, stored.id)))
     .orderBy(asc(heartbeatRunEvents.seq));
   const eventInventoryComplete = Number.isSafeInteger(stored.nextEventSeq) && stored.nextEventSeq >= 1 &&
     events.length === stored.nextEventSeq - 1 && events.every((event, index) => event.agentId === stored.agentId && event.seq === index + 1);
-  const durableSettlement = events.some((event) => {
+  const settlement = [...events].reverse().find((event) => {
     const payload = record(event.payload);
     return event.eventType === "lifecycle" && event.message === "task.run.measured" &&
       event.createdAt >= stored.finishedAt! && payload?.phase === "task.run.measured" &&
@@ -106,11 +135,8 @@ export async function collectLegacyNoProviderTurnFacts(
   const result = record(stored.resultJson);
   const cancellation = readRunCancellation(stored.resultJson);
   const dispatch = record(record(stored.runnerProfileJson)?.adapterDispatch);
-  const routerSelectionPresent = hasKeyDeep(stored.contextSnapshot, "aiRouterSelection") ||
-    hasKeyDeep(stored.runnerProfileJson, "aiRouterSelection") || hasKeyDeep(issueActivity, "aiRouterSelection") ||
-    revisions.some((revision) => hasKeyDeep(revision.afterConfig, "aiRouterSelection"));
-  return {
-    binding: { companyId: stored.companyId, runId: stored.id, agentId: stored.agentId, issueId },
+  const facts: ExecutionFacts = {
+    binding: { companyId: stored.companyId, runId: stored.id, agentId: stored.agentId, issueId, controllerBootId: stored.controllerBootId },
     run: {
       runtimeMode: stored.runtimeMode,
       status: stored.status,
@@ -126,20 +152,12 @@ export async function collectLegacyNoProviderTurnFacts(
       cancelledByActorType: result?.cancelledByActorType === "user" && typeof result.cancelledByUserId === "string" &&
         cancellation?.initiator.type === "user" && cancellation.initiator.id === result.cancelledByUserId ? "user" : null,
       adapterType: dispatch?.adapterType === "codex_local" ? "codex_local" : null,
-      routerSelectionPresent,
+      routerSelectionPresent: hasKeyDeep(stored.contextSnapshot, "aiRouterSelection") ||
+        hasKeyDeep(stored.runnerProfileJson, "aiRouterSelection"),
       controllerLeaseExpired: stored.controllerLeaseExpiresAt === null || stored.controllerLeaseExpiresAt <= now,
     },
-    effectiveConfig: {
-      adapterType: effective && cliConfig(effective.afterConfig) ? "codex_local" : null,
-      engine: effective && cliConfig(effective.afterConfig) ? "cli" : null,
-      command: effective && cliConfig(effective.afterConfig) ? "codex" : null,
-      agentConfigStable: stable,
-      issueAdapterOverridesAbsent: issue.assigneeAdapterOverrides === null,
-      issueOverrideHistoryComplete: overrideHistoryComplete,
-      sourceSemanticsProven,
-    },
     eventInventoryComplete,
-    durableSettlement,
+    durableSettlement: Boolean(settlement),
     events: events.map((event) => {
       const payload = record(event.payload);
       return { seq: event.seq, eventType: event.eventType, durableSettlement:
@@ -151,4 +169,13 @@ export async function collectLegacyNoProviderTurnFacts(
     hasRemoteOrUnreleasedLease: Boolean(lease),
     hasCoordinatorOwnerOrSuccessor: Boolean(coordinator),
   };
+  return { stored, facts, settledAt: settlement?.createdAt ?? null };
+}
+
+export async function collectLegacyNoProviderTurnExecutionFacts(
+  db: Db,
+  run: Run,
+  now = new Date(),
+): Promise<Omit<LegacyNoProviderTurnProofFacts, "effectiveConfig"> | null> {
+  return (await collectExecutionFactsAndRun(db, run, now))?.facts ?? null;
 }

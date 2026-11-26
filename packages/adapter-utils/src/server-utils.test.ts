@@ -642,6 +642,42 @@ describe("runChildProcess", () => {
   });
 
   it.skipIf(process.platform === "win32")(
+    "survives when the child closes stdin before deferred input is sent",
+    async () => {
+      const childClosedStdin = Promise.withResolvers<void>();
+      let output = "";
+      const stdinErrors: unknown[] = [];
+      const result = await runChildProcess(
+        randomUUID(),
+        process.execPath,
+        [
+          "-e",
+          "require('node:fs').closeSync(0); process.stdout.write('stdin-closed'); setTimeout(() => {}, 1200);",
+        ],
+        {
+          cwd: process.cwd(),
+          env: {},
+          stdin: "x".repeat(512 * 1024),
+          timeoutSec: 5,
+          graceSec: 1,
+          onLog: async (stream, chunk) => {
+            if (stream !== "stdout") return;
+            output += chunk;
+            if (output.includes("stdin-closed")) childClosedStdin.resolve();
+          },
+          onLogError: (error) => stdinErrors.push(error),
+          onSpawn: () => childClosedStdin.promise,
+        },
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(result.timedOut).toBe(false);
+      expect(result.stdout).toBe("stdin-closed");
+      expect(stdinErrors).toEqual([]);
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
     "kills descendant processes on timeout via the process group",
     async () => {
       let descendantPid: number | null = null;

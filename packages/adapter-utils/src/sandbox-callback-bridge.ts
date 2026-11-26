@@ -48,16 +48,12 @@ const DEFAULT_BRIDGE_MAX_QUEUE_DEPTH = 64;
 // never fails at the bridge before the server ever sees it.
 const BRIDGE_MULTIPART_FRAMING_HEADROOM_BYTES = 64 * 1024;
 const DEFAULT_BRIDGE_MAX_BODY_BYTES = 10 * 1024 * 1024 + BRIDGE_MULTIPART_FRAMING_HEADROOM_BYTES;
-// Per-iteration timeout for one poll-loop client call. A healthy control-plane
-// round trip finishes in well under one second, so 10s is far above a normal
-// iteration and never false-fires on a slow-but-live call. It is also well
-// under the in-sandbox 30s response deadline
-// (PAPERCLIP_BRIDGE_RESPONSE_TIMEOUT_MS), so the host loop fails fast and writes
-// 503 responses before the in-sandbox client gives up. A silently unresponsive
-// sandbox channel makes a client call hang with no reject; this timeout turns
-// that hang into a caught error, so the poll loop can back off and retry while
-// the watchdog below decides when to fail the queued requests.
+// Bound queue control and response-file calls separately from a full relay,
+// which also includes the controller's HTTP handling. The relay still finishes
+// before the 20s watchdog and leaves room for abort recovery before the 30s
+// sandbox response deadline.
 const DEFAULT_BRIDGE_ITERATION_TIMEOUT_MS = 10_000;
+const DEFAULT_BRIDGE_REQUEST_TIMEOUT_MS = 17_000;
 // Watchdog backstop for a hang that the per-iteration timeout does not catch
 // (for example many slow-but-under-timeout calls, or a stall outside the awaited
 // calls). It is larger than one iteration timeout, so a single slow iteration
@@ -820,9 +816,8 @@ export async function startSandboxCallbackBridgeWorker(input: {
   client: SandboxCallbackBridgeQueueClient;
   queueDir: string;
   pollIntervalMs?: number | null;
-  // Per-iteration timeout for one poll-loop client call (the `listJsonFiles`
-  // poll and one `processRequestFile`). On timeout the loop `catch` runs
-  // `failPendingRequests`. Defaults to DEFAULT_BRIDGE_ITERATION_TIMEOUT_MS.
+  // Optional override for queue calls and full relay processing. Defaults to
+  // separate queue-call and relay deadlines.
   iterationTimeoutMs?: number | null;
   // Watchdog threshold. When the loop makes no successful iteration within this
   // time, the watchdog runs `failPendingRequests` and surfaces a run-level error
@@ -864,6 +859,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
 }): Promise<SandboxCallbackBridgeWorkerHandle> {
   const pollIntervalMs = normalizeTimeoutMs(input.pollIntervalMs, DEFAULT_BRIDGE_POLL_INTERVAL_MS);
   const iterationTimeoutMs = normalizeTimeoutMs(input.iterationTimeoutMs, DEFAULT_BRIDGE_ITERATION_TIMEOUT_MS);
+  const requestTimeoutMs = normalizeTimeoutMs(input.iterationTimeoutMs, DEFAULT_BRIDGE_REQUEST_TIMEOUT_MS);
   const watchdogTimeoutMs = normalizeTimeoutMs(input.watchdogTimeoutMs, DEFAULT_BRIDGE_WATCHDOG_TIMEOUT_MS);
   const abortedHandlerGraceMs = normalizeTimeoutMs(
     input.abortedHandlerGraceMs,
@@ -1588,7 +1584,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
                 : runWithRuntimeParent(input.getRuntimeParentContext?.(), () =>
                     processRequestFile(fileName),
                   ),
-              iterationTimeoutMs,
+              requestTimeoutMs,
               `Sandbox callback bridge process request ${fileName}`,
             );
             lastSuccessfulIterationAt = Date.now();

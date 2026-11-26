@@ -1999,6 +1999,56 @@ describe("sandbox callback bridge", () => {
     })}\n`;
   }
 
+  it("delivers one response when the owner status PATCH takes 13 seconds", async () => {
+    vi.useFakeTimers();
+    const queueDir = "/virtual-bridge/slow-status";
+    const directories = sandboxCallbackBridgeDirectories(queueDir);
+    const requestPath = path.posix.join(directories.requestsDir, "status.json");
+    const requestBodies = new Map([[requestPath, JSON.stringify({
+      ...JSON.parse(bridgeRequestJson("status")),
+      method: "PATCH",
+      path: "/api/issues/task",
+      body: "{}",
+    })]]);
+    const writes: number[] = [];
+    const { runtimeSpan, workerErrors } = createWorkerErrorCapture();
+    const handler = vi.fn<Parameters<typeof startSandboxCallbackBridgeWorker>[0]["handleRequest"]>(
+      (_request, options) => new Promise((resolve, reject) => {
+        const timer = setTimeout(() => resolve({ status: 200, body: "{}" }), 13_000);
+        const signal = options?.signal;
+        signal?.addEventListener("abort", () => {
+          clearTimeout(timer);
+          reject(signal.reason);
+        }, { once: true });
+      }),
+    );
+    const worker = await startSandboxCallbackBridgeWorker({
+      queueDir,
+      runtimeSpan,
+      handleRequest: handler,
+      client: {
+        ...virtualQueueReadClient(directories, requestBodies),
+        rename: async () => {},
+        remove: async (name) => { requestBodies.delete(name); },
+        writeResponseFile: async (_name, body) => {
+          writes.push(JSON.parse(body).status);
+          return { wrote: true };
+        },
+      },
+    });
+    try {
+      await vi.advanceTimersByTimeAsync(14_000);
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(writes).toEqual([200]);
+      expect(workerErrors).toEqual([]);
+    } finally {
+      const stopped = worker.stop({ drainTimeoutMs: 50 });
+      await vi.advanceTimersByTimeAsync(250);
+      await stopped;
+      vi.useRealTimers();
+    }
+  });
+
   it("times out a stalled poll, surfaces a run-level error, and recovers to deliver the request", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-hang-"));
     cleanupDirs.push(rootDir);

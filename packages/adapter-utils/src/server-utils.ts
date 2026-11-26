@@ -4912,11 +4912,16 @@ export async function runChildProcess(
         });
 
         const stdin = child.stdin;
-        if (opts.stdin != null && stdin) {
+        const stdinPayload = opts.stdin;
+        if (stdinPayload != null && stdin) {
+          stdin.on("error", (err: NodeJS.ErrnoException) => {
+            if (err.code !== "EPIPE" && err.code !== "ERR_STREAM_DESTROYED") {
+              onLogError(err, runId, "failed to send adapter stdin");
+            }
+          });
           void spawnPersistPromise.finally(() => {
-            if (child.killed || stdin.destroyed) return;
-            stdin.write(opts.stdin as string);
-            stdin.end();
+            if (child.killed || stdin.destroyed || !stdin.writable || stdin.writableEnded) return;
+            stdin.end(stdinPayload);
           });
         }
 
